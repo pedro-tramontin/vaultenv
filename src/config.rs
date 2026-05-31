@@ -48,6 +48,18 @@ pub enum AuthMethod {
     Ldap { username: String, password: String },
     /// Authenticate via Okta (username + password).
     Okta { username: String, password: String },
+    /// Authenticate via Azure Managed Service Identity (instance mode).
+    Azure {
+        role: String,
+        resource: Option<String>,
+    },
+    /// Authenticate via GCP GCE instance metadata.
+    Gcp { role: String },
+    /// Authenticate via AWS EC2 instance metadata (PKCS7 / identity document).
+    AwsEc2 {
+        role: String,
+        signature_type: crate::cloud_metadata::Ec2SignatureType,
+    },
 }
 
 /// All configuration resolved from CLI, environment variables, and defaults.
@@ -109,6 +121,26 @@ pub struct Options {
     /// Okta password for Vault auth.
     #[arg(long, env = "VAULTENV_OKTA_PASSWORD")]
     pub okta_password: Option<String>,
+
+    /// Azure role for Vault auth.
+    #[arg(long, env = "VAULTENV_AZURE_ROLE")]
+    pub azure_role: Option<String>,
+
+    /// Azure resource URL for MSI (optional).
+    #[arg(long, env = "VAULTENV_AZURE_RESOURCE")]
+    pub azure_resource: Option<String>,
+
+    /// GCE role for Vault auth.
+    #[arg(long, env = "VAULTENV_GCP_GCE_ROLE")]
+    pub gcp_gce_role: Option<String>,
+
+    /// AWS EC2 role for Vault auth.
+    #[arg(long, env = "VAULTENV_AWS_EC2_ROLE")]
+    pub aws_ec2_role: Option<String>,
+
+    /// AWS EC2 signature type (pkcs7, identity, rsa2048).
+    #[arg(long, env = "VAULTENV_AWS_EC2_SIGNATURE_TYPE", default_value = "pkcs7")]
+    pub aws_ec2_signature_type: crate::cloud_metadata::Ec2SignatureTypeArg,
 
     /// Path to the secrets file.
     #[arg(long, env = "VAULTENV_SECRETS_FILE")]
@@ -218,12 +250,18 @@ impl Options {
             &self.approle_role_id,
             &self.ldap_username,
             &self.okta_username,
+            &self.azure_role,
+            &self.gcp_gce_role,
+            &self.aws_ec2_role,
         ) {
-            (_, Some(_), _, _, _, _) => Some("github".to_string()),
-            (_, _, Some(_), _, _, _) => Some("kubernetes".to_string()),
-            (_, _, _, Some(_), _, _) => Some("approle".to_string()),
-            (_, _, _, _, Some(_), _) => Some("ldap".to_string()),
-            (_, _, _, _, _, Some(_)) => Some("okta".to_string()),
+            (_, Some(_), _, _, _, _, _, _, _) => Some("github".to_string()),
+            (_, _, Some(_), _, _, _, _, _, _) => Some("kubernetes".to_string()),
+            (_, _, _, Some(_), _, _, _, _, _) => Some("approle".to_string()),
+            (_, _, _, _, Some(_), _, _, _, _) => Some("ldap".to_string()),
+            (_, _, _, _, _, Some(_), _, _, _) => Some("okta".to_string()),
+            (_, _, _, _, _, _, Some(_), _, _) => Some("azure".to_string()),
+            (_, _, _, _, _, _, _, Some(_), _) => Some("gcp".to_string()),
+            (_, _, _, _, _, _, _, _, Some(_)) => Some("aws".to_string()),
             _ => None,
         };
     }
@@ -257,6 +295,21 @@ impl Options {
             return AuthMethod::Okta {
                 username: user.clone(),
                 password: pass.clone(),
+            };
+        }
+        if let Some(role) = &self.azure_role {
+            return AuthMethod::Azure {
+                role: role.clone(),
+                resource: self.azure_resource.clone(),
+            };
+        }
+        if let Some(role) = &self.gcp_gce_role {
+            return AuthMethod::Gcp { role: role.clone() };
+        }
+        if let Some(role) = &self.aws_ec2_role {
+            return AuthMethod::AwsEc2 {
+                role: role.clone(),
+                signature_type: self.aws_ec2_signature_type.0,
             };
         }
         AuthMethod::None
@@ -491,6 +544,36 @@ mod tests {
     }
 
     #[test]
+    fn test_auth_backend_default_azure() {
+        let mut opts = Options {
+            azure_role: Some("web-role".to_string()),
+            ..make_minimal()
+        };
+        opts.resolve_auth_backend();
+        assert_eq!(opts.auth_backend, Some("azure".to_string()));
+    }
+
+    #[test]
+    fn test_auth_backend_default_gcp() {
+        let mut opts = Options {
+            gcp_gce_role: Some("web-role".to_string()),
+            ..make_minimal()
+        };
+        opts.resolve_auth_backend();
+        assert_eq!(opts.auth_backend, Some("gcp".to_string()));
+    }
+
+    #[test]
+    fn test_auth_backend_default_aws() {
+        let mut opts = Options {
+            aws_ec2_role: Some("web-role".to_string()),
+            ..make_minimal()
+        };
+        opts.resolve_auth_backend();
+        assert_eq!(opts.auth_backend, Some("aws".to_string()));
+    }
+
+    #[test]
     fn test_auth_backend_keeps_explicit() {
         let mut opts = Options {
             auth_backend: Some("custom".to_string()),
@@ -567,6 +650,60 @@ mod tests {
     }
 
     #[test]
+    fn test_auth_method_azure() {
+        let opts = Options {
+            azure_role: Some("web-role".to_string()),
+            azure_resource: Some("https://management.azure.com/".to_string()),
+            ..make_minimal()
+        };
+        match opts.auth_method() {
+            AuthMethod::Azure { role, resource } => {
+                assert_eq!(role, "web-role");
+                assert_eq!(resource, Some("https://management.azure.com/".to_string()));
+            }
+            other => panic!("expected Azure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_auth_method_gcp() {
+        let opts = Options {
+            gcp_gce_role: Some("web-role".to_string()),
+            ..make_minimal()
+        };
+        match opts.auth_method() {
+            AuthMethod::Gcp { role } => {
+                assert_eq!(role, "web-role");
+            }
+            other => panic!("expected GCP, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_auth_method_aws_ec2() {
+        let opts = Options {
+            aws_ec2_role: Some("web-role".to_string()),
+            aws_ec2_signature_type: crate::cloud_metadata::Ec2SignatureTypeArg(
+                crate::cloud_metadata::Ec2SignatureType::Identity,
+            ),
+            ..make_minimal()
+        };
+        match opts.auth_method() {
+            AuthMethod::AwsEc2 {
+                role,
+                signature_type,
+            } => {
+                assert_eq!(role, "web-role");
+                assert_eq!(
+                    signature_type,
+                    crate::cloud_metadata::Ec2SignatureType::Identity
+                );
+            }
+            other => panic!("expected AwsEc2, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn test_validate_missing_cmd() {
         let mut opts = make_minimal();
         opts.cmd.clear();
@@ -589,6 +726,13 @@ mod tests {
             ldap_password: None,
             okta_username: None,
             okta_password: None,
+            azure_role: None,
+            azure_resource: None,
+            gcp_gce_role: None,
+            aws_ec2_role: None,
+            aws_ec2_signature_type: crate::cloud_metadata::Ec2SignatureTypeArg(
+                crate::cloud_metadata::Ec2SignatureType::Pkcs7,
+            ),
             secrets_file: PathBuf::from("/dev/null"),
             cmd: "echo".to_string(),
             args: Vec::new(),

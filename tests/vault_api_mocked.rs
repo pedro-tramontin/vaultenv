@@ -1,6 +1,7 @@
 use reqwest::Url;
 use serde_json::json;
 use vaultenv::{
+    cloud_metadata::Ec2SignatureType,
     config::AuthMethod,
     secrets_file::Secret,
     vault_api::{EngineType, MountInfo, VaultClient},
@@ -84,7 +85,6 @@ async fn test_mount_info_discovery() {
         key: "baz".to_string(),
         var_name: "FOO".to_string(),
     };
-    // V2 => path should include /data/
     assert_eq!(mount_info.secret_path(&secret), "/v1/secret/data/foo/bar");
 }
 
@@ -124,27 +124,27 @@ async fn test_fetch_secret_kv1() {
     let (host, port) = parse_uri(&server.uri());
 
     Mock::given(method("GET"))
-        .and(path("/v1/legacy/config"))
+        .and(path("/v1/secret/app/config"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "data": { "password": "old-but-gold" }
+            "data": { "api_key": "old-secret" }
         })))
         .mount(&server)
         .await;
 
     let client = VaultClient::new(&host, port, false, Some("s.xxx".into()), 40, 9).unwrap();
-    let mount_info = MountInfo::from_map([("legacy/".to_string(), EngineType::V1)].into());
+    let mount_info = MountInfo::from_map([("secret/".to_string(), EngineType::V1)].into());
 
     let secret = Secret {
-        mount: "legacy".to_string(),
-        path: "config".to_string(),
-        key: "password".to_string(),
-        var_name: "LEGACY_PASSWORD".to_string(),
+        mount: "secret".to_string(),
+        path: "app/config".to_string(),
+        key: "api_key".to_string(),
+        var_name: "API_KEY".to_string(),
     };
 
     let data = client.get_secret(&mount_info, &secret).await.unwrap();
     assert_eq!(
-        data.0.get("password").unwrap().as_str().unwrap(),
-        "old-but-gold"
+        data.0.get("api_key").unwrap().as_str().unwrap(),
+        "old-secret"
     );
 }
 
@@ -154,8 +154,8 @@ async fn test_secret_not_found_404() {
     let (host, port) = parse_uri(&server.uri());
 
     Mock::given(method("GET"))
-        .and(path("/v1/secret/data/missing"))
-        .respond_with(ResponseTemplate::new(404))
+        .and(path("/v1/secret/data/app/404"))
+        .respond_with(ResponseTemplate::new(404).set_body_string("not found"))
         .mount(&server)
         .await;
 
@@ -164,9 +164,9 @@ async fn test_secret_not_found_404() {
 
     let secret = Secret {
         mount: "secret".to_string(),
-        path: "missing".to_string(),
-        key: "anything".to_string(),
-        var_name: "MISSING".to_string(),
+        path: "app/404".to_string(),
+        key: "api_key".to_string(),
+        var_name: "API_KEY".to_string(),
     };
 
     let err = client.get_secret(&mount_info, &secret).await.unwrap_err();
@@ -178,35 +178,34 @@ async fn test_retry_on_503_then_success() {
     let server = MockServer::start().await;
     let (host, port) = parse_uri(&server.uri());
 
-    // First request returns 503; second returns 200
+    // First call fails, second succeeds
     Mock::given(method("GET"))
-        .and(path("/v1/secret/data/flaky"))
-        .respond_with(ResponseTemplate::new(503).set_body_string("unavailable"))
+        .and(path("/v1/secret/data/app/flaky"))
+        .respond_with(ResponseTemplate::new(503))
         .up_to_n_times(1)
         .mount(&server)
         .await;
 
     Mock::given(method("GET"))
-        .and(path("/v1/secret/data/flaky"))
+        .and(path("/v1/secret/data/app/flaky"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "data": { "data": { "value": " recovered" } }
+            "data": { "data": { "key": "recovered" } }
         })))
         .mount(&server)
         .await;
 
-    // Fast retry settings for the test
-    let client = VaultClient::new(&host, port, false, Some("s.xxx".into()), 10, 3).unwrap();
+    let client = VaultClient::new(&host, port, false, Some("s.xxx".into()), 40, 1).unwrap();
     let mount_info = MountInfo::from_map([("secret/".to_string(), EngineType::V2)].into());
 
     let secret = Secret {
         mount: "secret".to_string(),
-        path: "flaky".to_string(),
-        key: "value".to_string(),
+        path: "app/flaky".to_string(),
+        key: "key".to_string(),
         var_name: "FLAKY".to_string(),
     };
 
     let data = client.get_secret(&mount_info, &secret).await.unwrap();
-    assert_eq!(data.0.get("value").unwrap().as_str().unwrap(), " recovered");
+    assert_eq!(data.0.get("key").unwrap().as_str().unwrap(), "recovered");
 }
 
 #[tokio::test]
@@ -251,6 +250,10 @@ async fn test_concurrent_fetch() {
     let results = client.get_secrets(&mount_info, &secrets, 8).await.unwrap();
     assert_eq!(results.len(), 2);
 }
+
+// ---------------------------------------------------------------------------
+// AppRole, LDAP, Okta
+// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_approle_auth_success() {
@@ -334,4 +337,135 @@ async fn test_okta_auth_success() {
         .unwrap();
 
     assert_eq!(client.token(), Some("okta-token-123"));
+}
+
+// ---------------------------------------------------------------------------
+// Cloud auth (Azure / GCP / AWS EC2 instance metadata)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_azure_auth_success() {
+    let server = MockServer::start().await;
+    let (host, port) = parse_uri(&server.uri());
+
+    unsafe {
+        std::env::set_var("VAULTENV_AZURE_METADATA_ENDPOINT", server.uri());
+    }
+
+    Mock::given(method("GET"))
+        .and(path("/metadata/identity/oauth2/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "msi-jwt-123"
+        })))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/metadata/instance/compute"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "name": "vm-01",
+            "subscriptionId": "sub-123",
+            "resourceGroupName": "rg-01"
+        })))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/v1/auth/azure/login"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "auth": { "client_token": "azure-token-123" }
+        })))
+        .mount(&server)
+        .await;
+
+    let client = VaultClient::new(&host, port, false, None, 40, 9).unwrap();
+    let client = client
+        .authenticate(
+            &AuthMethod::Azure {
+                role: "web-role".into(),
+                resource: Some("https://management.azure.com/".into()),
+            },
+            Some("azure"),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(client.token(), Some("azure-token-123"));
+}
+
+#[tokio::test]
+async fn test_gcp_gce_auth_success() {
+    let server = MockServer::start().await;
+    let (host, port) = parse_uri(&server.uri());
+
+    unsafe {
+        std::env::set_var("VAULTENV_GCE_METADATA_HOST", server.uri());
+    }
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/computeMetadata/v1/instance/service-accounts/default/identity",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_string("gce-jwt-123"))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/v1/auth/gcp/login"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "auth": { "client_token": "gcp-token-123" }
+        })))
+        .mount(&server)
+        .await;
+
+    let client = VaultClient::new(&host, port, false, None, 40, 9).unwrap();
+    let client = client
+        .authenticate(
+            &AuthMethod::Gcp {
+                role: "web-role".into(),
+            },
+            Some("gcp"),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(client.token(), Some("gcp-token-123"));
+}
+
+#[tokio::test]
+async fn test_aws_ec2_auth_success() {
+    let server = MockServer::start().await;
+    let (host, port) = parse_uri(&server.uri());
+
+    unsafe {
+        std::env::set_var("VAULTENV_EC2_METADATA_ENDPOINT", server.uri());
+    }
+
+    Mock::given(method("GET"))
+        .and(path("/latest/dynamic/instance-identity/pkcs7"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("pkcs7-payload"))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/v1/auth/aws/login"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "auth": { "client_token": "aws-token-123" }
+        })))
+        .mount(&server)
+        .await;
+
+    let client = VaultClient::new(&host, port, false, None, 40, 9).unwrap();
+    let client = client
+        .authenticate(
+            &AuthMethod::AwsEc2 {
+                role: "web-role".into(),
+                signature_type: Ec2SignatureType::Pkcs7,
+            },
+            Some("aws"),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(client.token(), Some("aws-token-123"));
 }
