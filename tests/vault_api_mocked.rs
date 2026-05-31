@@ -1,8 +1,8 @@
 use reqwest::Url;
 use serde_json::json;
 use vaultenv::{
+    auth::AuthMethod,
     cloud_metadata::Ec2SignatureType,
-    config::AuthMethod,
     secrets_file::Secret,
     vault_api::{EngineType, MountInfo, VaultClient},
 };
