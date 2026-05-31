@@ -119,3 +119,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release --locked
+
+  integration-vault-real:
+    name: Integration Test (Real Vault)
+    if: github.event_name == 'pull_request' && contains(github.head_ref, 'release-please')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run testcontainers suite
+        run: cargo test --test vault_api_real -- --nocapture
+        env:
+          VAULT_INTEGRATION_TEST: 1
