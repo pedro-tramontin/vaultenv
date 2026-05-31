@@ -1,0 +1,63 @@
+name: Extended Quality Checks
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  miri:
+    name: Miri (Undefined Behaviour)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo +nightly miri test --locked || true
+
+  address-sanitizer:
+    name: AddressSanitizer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - run: |
+          export RUSTFLAGS="-Zsanitizer=address"
+          cargo +nightly test --tests --target x86_64-unknown-linux-gnu --locked || true
+
+  thread-sanitizer:
+    name: ThreadSanitizer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - run: |
+          export RUSTFLAGS="-Zsanitizer=thread"
+          cargo +nightly test --tests --target x86_64-unknown-linux-gnu --locked || true
+
+  dead-deps:
+    name: Dead Dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-udeps
+      - run: cargo +nightly udeps --all-targets --all-features
+        env:
+          RUSTFLAGS: ""
+        continue-on-error: true
