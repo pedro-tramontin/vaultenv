@@ -99,6 +99,17 @@ Every CLI flag has a corresponding environment variable:
 | `--github-token` | `VAULTENV_GITHUB_TOKEN` | — | GitHub PAT for Vault GitHub auth |
 | `--kubernetes-role` | `VAULTENV_KUBERNETES_ROLE` | — | K8s role for Vault Kubernetes auth |
 | `--auth-backend` | `VAULT_AUTH_BACKEND` | — | Override auth backend name |
+| `--approle-role-id` | `VAULTENV_APPROLE_ROLE_ID` | — | AppRole role ID |
+| `--approle-secret-id` | `VAULTENV_APPROLE_SECRET_ID` | — | AppRole secret ID |
+| `--ldap-username` | `VAULTENV_LDAP_USERNAME` | — | LDAP username |
+| `--ldap-password` | `VAULTENV_LDAP_PASSWORD` | — | LDAP password |
+| `--okta-username` | `VAULTENV_OKTA_USERNAME` | — | Okta username |
+| `--okta-password` | `VAULTENV_OKTA_PASSWORD` | — | Okta password |
+| `--azure-role` | `VAULTENV_AZURE_ROLE` | — | Azure role for Vault azure auth (instance mode) |
+| `--azure-resource` | `VAULTENV_AZURE_RESOURCE` | `https://management.azure.com/` | Azure resource URL for MSI |
+| `--gcp-gce-role` | `VAULTENV_GCP_GCE_ROLE` | — | GCP GCE role for Vault GCP auth |
+| `--aws-ec2-role` | `VAULTENV_AWS_EC2_ROLE` | — | AWS EC2 role for Vault AWS auth |
+| `--aws-ec2-signature-type` | `VAULTENV_AWS_EC2_SIGNATURE_TYPE` | `pkcs7` | EC2 signature type: `pkcs7`, `identity`, `rsa2048` |
 | `--connect-tls` | `VAULTENV_CONNECT_TLS` | `true` | Use TLS |
 | `--validate-certs` | `VAULTENV_VALIDATE_CERTS` | `true` | Validate TLS certificates |
 | `--inherit-env` | `VAULTENV_INHERIT_ENV` | `true` | Inherit parent environment |

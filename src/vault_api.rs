@@ -100,6 +100,8 @@ pub enum VaultError {
     KubernetesJwtFailed(#[source] std::io::Error),
     #[error("Kubernetes JWT is not valid UTF-8")]
     KubernetesJwtInvalidUtf8,
+    #[error("cloud metadata fetch failed: {0}")]
+    CloudMetadataFailed(String),
 }
 
 /// Retryable Vault errors (should trigger a retry attempt).
@@ -351,6 +353,97 @@ impl VaultClient {
                 let backend = backend.unwrap_or("okta");
                 let body = serde_json::json!({ "password": password });
                 let path = format!("/v1/auth/{backend}/login/{username}");
+                let client = self.clone();
+                let resp: ClientToken = (|| async {
+                    client
+                        .do_unauthenticated_json_request::<ClientToken>(
+                            reqwest::Method::POST,
+                            &path,
+                            Some(body.clone()),
+                        )
+                        .await
+                })
+                .retry(self.retry_builder)
+                .when(is_retryable)
+                .await?;
+                Ok(self.with_token(resp.auth.client_token))
+            }
+            AuthMethod::Azure { role, resource } => {
+                let backend = backend.unwrap_or("azure");
+                let resource = resource
+                    .as_deref()
+                    .unwrap_or("https://management.azure.com/");
+                let jwt = crate::cloud_metadata::get_azure_jwt(resource)
+                    .await
+                    .map_err(|e| VaultError::CloudMetadataFailed(e.to_string()))?;
+                let metadata = crate::cloud_metadata::get_azure_vm_metadata()
+                    .await
+                    .map_err(|e| VaultError::CloudMetadataFailed(e.to_string()))?;
+                let body = serde_json::json!({
+                    "role": role,
+                    "jwt": jwt,
+                    "vm_name": metadata.name,
+                    "vmss_name": metadata.vm_scale_set_name,
+                    "subscription_id": metadata.subscription_id,
+                    "resource_group_name": metadata.resource_group_name,
+                });
+                let path = format!("/v1/auth/{backend}/login");
+                let client = self.clone();
+                let resp: ClientToken = (|| async {
+                    client
+                        .do_unauthenticated_json_request::<ClientToken>(
+                            reqwest::Method::POST,
+                            &path,
+                            Some(body.clone()),
+                        )
+                        .await
+                })
+                .retry(self.retry_builder)
+                .when(is_retryable)
+                .await?;
+                Ok(self.with_token(resp.auth.client_token))
+            }
+            AuthMethod::Gcp { role } => {
+                let backend = backend.unwrap_or("gcp");
+                let vault_addr = self.base_url.to_string().trim_end_matches('/').to_string();
+                let audience = format!("{vault_addr}/vault/{role}");
+                let jwt = crate::cloud_metadata::get_gce_jwt(&audience)
+                    .await
+                    .map_err(|e| VaultError::CloudMetadataFailed(e.to_string()))?;
+                let body = serde_json::json!({ "role": role, "jwt": jwt });
+                let path = format!("/v1/auth/{backend}/login");
+                let client = self.clone();
+                let resp: ClientToken = (|| async {
+                    client
+                        .do_unauthenticated_json_request::<ClientToken>(
+                            reqwest::Method::POST,
+                            &path,
+                            Some(body.clone()),
+                        )
+                        .await
+                })
+                .retry(self.retry_builder)
+                .when(is_retryable)
+                .await?;
+                Ok(self.with_token(resp.auth.client_token))
+            }
+            AuthMethod::AwsEc2 {
+                role,
+                signature_type,
+            } => {
+                let backend = backend.unwrap_or("aws");
+                let metadata = crate::cloud_metadata::get_ec2_metadata(*signature_type)
+                    .await
+                    .map_err(|e| VaultError::CloudMetadataFailed(e.to_string()))?;
+                let mut body = serde_json::Map::new();
+                body.insert("role".to_string(), serde_json::Value::String(role.clone()));
+                for (k, v) in metadata {
+                    body.insert(k, serde_json::Value::String(v));
+                }
+                let nonce = uuid::Uuid::new_v4().to_string();
+                body.insert("nonce".to_string(), serde_json::Value::String(nonce));
+                let body = serde_json::Value::Object(body);
+                let path = format!("/v1/auth/{backend}/login");
                 let client = self.clone();
                 let resp: ClientToken = (|| async {
                     client
