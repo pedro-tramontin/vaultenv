@@ -13,53 +13,103 @@ jobs:
     name: Build Release (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         include:
+          # Linux
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
+            cross: false
+          - target: i686-unknown-linux-gnu
+            os: ubuntu-latest
+            cross: true
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
+            cross: true
+
+          # macOS
           - target: x86_64-apple-darwin
             os: macos-latest
+            cross: false
           - target: aarch64-apple-darwin
             os: macos-latest
+            cross: false
+
+          # Windows
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            cross: false
+          - target: i686-pc-windows-msvc
+            os: windows-latest
+            cross: false
+
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install cross-compilation tools
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
+      - name: Install cross
+        if: matrix.cross
+        run: cargo install cross --locked
+
+      - name: Install cross-compilation tools (Linux i686)
+        if: matrix.target == 'i686-unknown-linux-gnu' && !matrix.cross
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install -y gcc-multilib libc6-dev-i386
+
+      - name: Install cross-compilation tools (Linux aarch64)
+        if: matrix.target == 'aarch64-unknown-linux-gnu' && !matrix.cross
         run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
 
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
 
-      - name: Build binary
+      - name: Build binary (native)
+        if: ${{ !matrix.cross }}
         run: cargo build --release --locked --target ${{ matrix.target }}
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
 
-      - name: Package binary
+      - name: Build binary (cross)
+        if: matrix.cross
+        run: cross build --release --locked --target ${{ matrix.target }}
+
+      - name: Set environment variables
         shell: bash
         run: |
-          ARCHIVE="vaultenv-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz"
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            BIN="target/${{ matrix.target }}/release/vaultenv.exe"
+            echo "BIN=target/${{ matrix.target }}/release/vaultenv.exe" >> "$GITHUB_ENV"
+            echo "ARCHIVE=vaultenv-${GITHUB_REF_NAME}-${{ matrix.target }}.zip" >> "$GITHUB_ENV"
           else
-            BIN="target/${{ matrix.target }}/release/vaultenv"
+            echo "BIN=target/${{ matrix.target }}/release/vaultenv" >> "$GITHUB_ENV"
+            echo "ARCHIVE=vaultenv-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz" >> "$GITHUB_ENV"
           fi
+
+      - name: Package binary (Unix)
+        if: ${{ matrix.os != 'windows-latest' }}
+        run: |
           tar czf "$ARCHIVE" -C "$(dirname "$BIN")" "$(basename "$BIN")"
           sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
-          ls -la "$ARCHIVE" "$ARCHIVE.sha256"
+
+      - name: Package binary (Windows)
+        if: ${{ matrix.os == 'windows-latest' }}
+        run: |
+          7z a "$ARCHIVE" "$BIN"
+          certutil -hashfile "$ARCHIVE" SHA256 | grep -v "CertUtil" > "$ARCHIVE.sha256"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: vaultenv-${{ matrix.target }}
-          path: vaultenv-*.tar.gz*
+          path: |
+            vaultenv-*
+          if-no-files-found: error
 
   publish:
     name: Publish GitHub Release
