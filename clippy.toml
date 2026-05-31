@@ -1,0 +1,4 @@
+# Clippy configuration.
+# Cognitive complexity threshold - functions above this are flagged.
+# Default is 25. We keep it at 25 with `#![warn(clippy::cognitive_complexity)]`
+# in lib.rs (warn in dev, deny in CI).

@@ -124,46 +124,54 @@ impl VaultClient {
                 debug!("no authentication method set");
                 Ok(self.clone())
             }
+            other => {
+                let (path, body) = self.build_auth_payload(other, backend).await?;
+                let token = self.do_unauthed_login_with_retry(&path, body).await?;
+                Ok(self.with_token(token))
+            }
+        }
+    }
+
+    /// Build the request path and JSON body for a given authentication method.
+    async fn build_auth_payload(
+        &self,
+        auth_method: &AuthMethod,
+        backend: Option<&str>,
+    ) -> Result<(String, serde_json::Value), VaultError> {
+        match auth_method {
+            AuthMethod::VaultToken { .. } | AuthMethod::None => {
+                unreachable!("direct token / none are handled before this call")
+            }
             AuthMethod::GitHub(github_token) => {
                 let backend = backend.unwrap_or("github");
                 let body = serde_json::json!({ "token": github_token });
                 let path = format!("/v1/auth/{backend}/login");
-                debug!(backend, path, "authenticating via GitHub");
-                let token = self.do_unauthed_login_with_retry(&path, body).await?;
-                Ok(self.with_token(token))
+                Ok((path, body))
             }
             AuthMethod::Kubernetes { role } => {
                 let backend = backend.unwrap_or("kubernetes");
                 let jwt = read_kubernetes_jwt().await?;
                 let body = serde_json::json!({ "jwt": jwt, "role": role });
                 let path = format!("/v1/auth/{backend}/login");
-                debug!(backend, path, "authenticating via Kubernetes");
-                let token = self.do_unauthed_login_with_retry(&path, body).await?;
-                Ok(self.with_token(token))
+                Ok((path, body))
             }
             AuthMethod::AppRole { role_id, secret_id } => {
                 let backend = backend.unwrap_or("approle");
                 let body = serde_json::json!({ "role_id": role_id, "secret_id": secret_id });
                 let path = format!("/v1/auth/{backend}/login");
-                debug!(backend, path, "authenticating via AppRole");
-                let token = self.do_unauthed_login_with_retry(&path, body).await?;
-                Ok(self.with_token(token))
+                Ok((path, body))
             }
             AuthMethod::Ldap { username, password } => {
                 let backend = backend.unwrap_or("ldap");
                 let body = serde_json::json!({ "password": password });
                 let path = format!("/v1/auth/{backend}/login/{username}");
-                debug!(backend, path, %username, "authenticating via LDAP");
-                let token = self.do_unauthed_login_with_retry(&path, body).await?;
-                Ok(self.with_token(token))
+                Ok((path, body))
             }
             AuthMethod::Okta { username, password } => {
                 let backend = backend.unwrap_or("okta");
                 let body = serde_json::json!({ "password": password });
                 let path = format!("/v1/auth/{backend}/login/{username}");
-                debug!(backend, path, %username, "authenticating via Okta");
-                let token = self.do_unauthed_login_with_retry(&path, body).await?;
-                Ok(self.with_token(token))
+                Ok((path, body))
             }
             AuthMethod::Azure { role, resource } => {
                 let backend = backend.unwrap_or("azure");
@@ -185,9 +193,7 @@ impl VaultClient {
                     "resource_group_name": metadata.resource_group_name,
                 });
                 let path = format!("/v1/auth/{backend}/login");
-                debug!(backend, path, "authenticating via Azure MSI");
-                let token = self.do_unauthed_login_with_retry(&path, body).await?;
-                Ok(self.with_token(token))
+                Ok((path, body))
             }
             AuthMethod::Gcp { role } => {
                 let backend = backend.unwrap_or("gcp");
@@ -198,9 +204,7 @@ impl VaultClient {
                     .map_err(|e| VaultError::CloudMetadataFailed(e.to_string()))?;
                 let body = serde_json::json!({ "role": role, "jwt": jwt });
                 let path = format!("/v1/auth/{backend}/login");
-                debug!(backend, path, "authenticating via GCP GCE");
-                let token = self.do_unauthed_login_with_retry(&path, body).await?;
-                Ok(self.with_token(token))
+                Ok((path, body))
             }
             AuthMethod::AwsEc2 {
                 role,
@@ -219,17 +223,13 @@ impl VaultClient {
                 body.insert("nonce".to_string(), serde_json::Value::String(nonce));
                 let body = serde_json::Value::Object(body);
                 let path = format!("/v1/auth/{backend}/login");
-                debug!(backend, path, "authenticating via AWS EC2");
-                let token = self.do_unauthed_login_with_retry(&path, body).await?;
-                Ok(self.with_token(token))
+                Ok((path, body))
             }
             AuthMethod::Jwt { role, token } => {
                 let backend = backend.unwrap_or("jwt");
                 let body = serde_json::json!({ "role": role, "jwt": token });
                 let path = format!("/v1/auth/{backend}/login");
-                debug!(backend, path, "authenticating via JWT");
-                let client_token = self.do_unauthed_login_with_retry(&path, body).await?;
-                Ok(self.with_token(client_token))
+                Ok((path, body))
             }
         }
     }
