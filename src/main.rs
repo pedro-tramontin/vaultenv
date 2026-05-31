@@ -69,7 +69,10 @@ async fn run() -> Result<()> {
 
     // Authenticate
     let auth_method = opts.auth_method();
-    info!(backend = opts.auth_backend.as_deref(), "Authenticating to Vault");
+    info!(
+        backend = opts.auth_backend.as_deref(),
+        "Authenticating to Vault"
+    );
     let client = client
         .authenticate(&auth_method, opts.auth_backend.as_deref())
         .await
