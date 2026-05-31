@@ -44,7 +44,11 @@ pub enum AuthMethod {
 
 /// All configuration resolved from CLI, environment variables, and defaults.
 #[derive(Debug, Clone, Parser)]
-#[command(name = "vaultenv", about = "Run programs with secrets from HashiCorp Vault", version)]
+#[command(
+    name = "vaultenv",
+    about = "Run programs with secrets from HashiCorp Vault",
+    version
+)]
 pub struct Options {
     /// Vault host (IP or DNS name).
     #[arg(long, env = "VAULT_HOST", default_value = "localhost")]
@@ -122,7 +126,11 @@ pub struct Options {
     pub max_concurrent_requests: usize,
 
     /// Behavior when duplicate environment variables are detected.
-    #[arg(long, env = "VAULTENV_DUPLICATE_VARIABLE_BEHAVIOR", default_value = "error")]
+    #[arg(
+        long,
+        env = "VAULTENV_DUPLICATE_VARIABLE_BEHAVIOR",
+        default_value = "error"
+    )]
     pub duplicate_behavior: DuplicateBehaviorArg,
 }
 
@@ -134,7 +142,9 @@ pub struct Options {
 pub struct LogLevelArg(pub LogLevel);
 
 impl Default for LogLevelArg {
-    fn default() -> Self { LogLevelArg(LogLevel::Error) }
+    fn default() -> Self {
+        LogLevelArg(LogLevel::Error)
+    }
 }
 
 impl std::str::FromStr for LogLevelArg {
@@ -143,7 +153,10 @@ impl std::str::FromStr for LogLevelArg {
         match s.to_ascii_lowercase().as_str() {
             "error" => Ok(LogLevelArg(LogLevel::Error)),
             "info" => Ok(LogLevelArg(LogLevel::Info)),
-            _ => Err(format!("unknown log level '{}', expected 'error' or 'info'", s)),
+            _ => Err(format!(
+                "unknown log level '{}', expected 'error' or 'info'",
+                s
+            )),
         }
     }
 }
@@ -161,7 +174,9 @@ impl std::fmt::Display for LogLevelArg {
 pub struct DuplicateBehaviorArg(pub DuplicateBehavior);
 
 impl Default for DuplicateBehaviorArg {
-    fn default() -> Self { DuplicateBehaviorArg(DuplicateBehavior::Error) }
+    fn default() -> Self {
+        DuplicateBehaviorArg(DuplicateBehavior::Error)
+    }
 }
 
 impl std::str::FromStr for DuplicateBehaviorArg {
@@ -171,7 +186,10 @@ impl std::str::FromStr for DuplicateBehaviorArg {
             "error" => Ok(DuplicateBehaviorArg(DuplicateBehavior::Error)),
             "keep" => Ok(DuplicateBehaviorArg(DuplicateBehavior::Keep)),
             "overwrite" => Ok(DuplicateBehaviorArg(DuplicateBehavior::Overwrite)),
-            _ => Err(format!("unknown duplicate behavior '{}', expected 'error', 'keep', or 'overwrite'", s)),
+            _ => Err(format!(
+                "unknown duplicate behavior '{}', expected 'error', 'keep', or 'overwrite'",
+                s
+            )),
         }
     }
 }
