@@ -469,3 +469,85 @@ async fn test_aws_ec2_auth_success() {
 
     assert_eq!(client.token(), Some("aws-token-123"));
 }
+
+#[tokio::test]
+async fn test_jwt_auth_success() {
+    let server = MockServer::start().await;
+    let (host, port) = parse_uri(&server.uri());
+
+    Mock::given(method("POST"))
+        .and(path("/v1/auth/jwt/login"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "auth": { "client_token": "jwt-token-123" }
+        })))
+        .mount(&server)
+        .await;
+
+    let client = VaultClient::new(&host, port, false, None, 40, 9).unwrap();
+    let client = client
+        .authenticate(
+            &AuthMethod::Jwt {
+                role: "ci-role".into(),
+                token: "id-jwt-abc".into(),
+            },
+            Some("jwt"),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(client.token(), Some("jwt-token-123"));
+}
+
+#[tokio::test]
+async fn test_jwt_auth_failure_400() {
+    let server = MockServer::start().await;
+    let (host, port) = parse_uri(&server.uri());
+
+    Mock::given(method("POST"))
+        .and(path("/v1/auth/jwt/login"))
+        .respond_with(ResponseTemplate::new(400).set_body_string("invalid jwt"))
+        .mount(&server)
+        .await;
+
+    let client = VaultClient::new(&host, port, false, None, 40, 9).unwrap();
+    let err = client
+        .authenticate(
+            &AuthMethod::Jwt {
+                role: "ci-role".into(),
+                token: "bad-jwt".into(),
+            },
+            Some("jwt"),
+        )
+        .await
+        .unwrap_err();
+
+    assert!(format!("{err}").contains("invalid jwt"));
+}
+
+#[tokio::test]
+async fn test_jwt_auth_with_oidc_backend_path() {
+    let server = MockServer::start().await;
+    let (host, port) = parse_uri(&server.uri());
+
+    Mock::given(method("POST"))
+        .and(path("/v1/auth/oidc/login"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "auth": { "client_token": "oidc-token-456" }
+        })))
+        .mount(&server)
+        .await;
+
+    let client = VaultClient::new(&host, port, false, None, 40, 9).unwrap();
+    let client = client
+        .authenticate(
+            &AuthMethod::Jwt {
+                role: "ci-role".into(),
+                token: "id-jwt-xyz".into(),
+            },
+            Some("oidc"),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(client.token(), Some("oidc-token-456"));
+}
