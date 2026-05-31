@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -Dwarnings
@@ -43,6 +46,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --all-targets --all-features -- -D warnings
 
+  cognitive-complexity:
+    name: Cognitive Complexity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-targets --all-features -- -D clippy::cognitive_complexity
+
   deny:
     name: Cargo Deny
     runs-on: ubuntu-latest
@@ -58,6 +72,44 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked
+
+  coverage:
+    name: Test Coverage
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-tarpaulin
+      - run: cargo tarpaulin --all-targets --out Xml --timeout 120
+      - uses: codecov/codecov-action@v5
+        with:
+          files: cobertura.xml
+          fail_ci_if_error: false
+          name: vaultenv-coverage
+          verbose: true
+
+  unsafe-analysis:
+    name: Unsafe Code Density
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-geiger
+      - run: |
+          cargo geiger --all-targets --all-features --output-format stdout \
+            | tee geiger-output.txt
+          if grep -E "^\s*[0-9]+\s+[0-9]+\s+[0-9]+\s+vaultenv" geiger-output.txt | grep -qv "0 0 0"; then
+            echo "::warning::Unsafe Rust detected in vaultenv code. Review required."
+          fi
 
   build-release:
     name: Build Release Binary
