@@ -10,60 +10,8 @@ use clap::Parser;
 use std::path::PathBuf;
 use url::Url;
 
-/// Log level for vaultenv output.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
-pub enum LogLevel {
-    /// Print errors only (default).
-    #[default]
-    Error,
-    /// Print informational messages.
-    Info,
-}
-
-/// Behavior when duplicate environment variables are detected.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum DuplicateBehavior {
-    /// Produce an error (default).
-    #[default]
-    Error,
-    /// Keep the existing variable, ignore the secret.
-    Keep,
-    /// Overwrite the existing variable with the secret value.
-    Overwrite,
-}
-
-/// Authentication method for Vault.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AuthMethod {
-    /// No authentication (do not send `X-Vault-Token`).
-    None,
-    /// Authenticate via GitHub personal access token.
-    GitHub(String),
-    /// Authenticate via Kubernetes service account.
-    Kubernetes { role: String },
-    /// Direct Vault token.
-    VaultToken { token: String },
-    /// Authenticate via AppRole (role_id + secret_id).
-    AppRole { role_id: String, secret_id: String },
-    /// Authenticate via LDAP (username + password).
-    Ldap { username: String, password: String },
-    /// Authenticate via Okta (username + password).
-    Okta { username: String, password: String },
-    /// Authenticate via Azure Managed Service Identity (instance mode).
-    Azure {
-        role: String,
-        resource: Option<String>,
-    },
-    /// Authenticate via GCP GCE instance metadata.
-    Gcp { role: String },
-    /// Authenticate via AWS EC2 instance metadata (PKCS7 / identity document).
-    AwsEc2 {
-        role: String,
-        signature_type: crate::cloud_metadata::Ec2SignatureType,
-    },
-    /// Authenticate via JWT/OIDC pre-exchanged token.
-    Jwt { role: String, token: String },
-}
+use crate::auth::AuthMethod;
+use crate::types::{DuplicateBehaviorArg, LogLevelArg};
 
 /// All configuration resolved from CLI, environment variables, and defaults.
 #[derive(Debug, Clone, Parser)]
@@ -223,7 +171,6 @@ impl Options {
             ),
         };
 
-        // Override host/port/tls from the parsed URL
         self.host = url.host_str().unwrap_or("localhost").to_string();
         self.port = url
             .port_or_known_default()
@@ -326,7 +273,7 @@ impl Options {
                 if let Some(r) = role {
                     if let Some(ref path) = self.jwt_file {
                         let token = std::fs::read_to_string(path)
-                            .with_context(|| format!("failed to read jwt file: {:?}", path))
+                            .with_context(|| format!("failed to read jwt file: {}", path.display()))
                             .expect("jwt file read failed");
                         return AuthMethod::Jwt {
                             role: r.clone(),
@@ -351,80 +298,6 @@ impl Options {
         Ok(())
     }
 }
-
-// ---------------------------------------------------------------------------
-// clap value parsers for enum types
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LogLevelArg(pub LogLevel);
-
-impl Default for LogLevelArg {
-    fn default() -> Self {
-        LogLevelArg(LogLevel::Error)
-    }
-}
-
-impl std::str::FromStr for LogLevelArg {
-    type Err = String;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_ascii_lowercase().as_str() {
-            "error" => Ok(LogLevelArg(LogLevel::Error)),
-            "info" => Ok(LogLevelArg(LogLevel::Info)),
-            _ => Err(format!(
-                "unknown log level '{}', expected 'error' or 'info'",
-                s
-            )),
-        }
-    }
-}
-
-impl std::fmt::Display for LogLevelArg {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.0 {
-            LogLevel::Error => write!(f, "error"),
-            LogLevel::Info => write!(f, "info"),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DuplicateBehaviorArg(pub DuplicateBehavior);
-
-impl Default for DuplicateBehaviorArg {
-    fn default() -> Self {
-        DuplicateBehaviorArg(DuplicateBehavior::Error)
-    }
-}
-
-impl std::str::FromStr for DuplicateBehaviorArg {
-    type Err = String;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_ascii_lowercase().as_str() {
-            "error" => Ok(DuplicateBehaviorArg(DuplicateBehavior::Error)),
-            "keep" => Ok(DuplicateBehaviorArg(DuplicateBehavior::Keep)),
-            "overwrite" => Ok(DuplicateBehaviorArg(DuplicateBehavior::Overwrite)),
-            _ => Err(format!(
-                "unknown duplicate behavior '{}', expected 'error', 'keep', or 'overwrite'",
-                s
-            )),
-        }
-    }
-}
-
-impl std::fmt::Display for DuplicateBehaviorArg {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.0 {
-            DuplicateBehavior::Error => write!(f, "error"),
-            DuplicateBehavior::Keep => write!(f, "keep"),
-            DuplicateBehavior::Overwrite => write!(f, "overwrite"),
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Env-file loading (from /etc/vaultenv.conf, ~/.config/vaultenv/vaultenv.conf, ./vaultenv.conf)
-// ---------------------------------------------------------------------------
 
 /// Read environment files in standard locations and return their contents
 /// as a list of (key, value) pairs per file.
@@ -467,10 +340,6 @@ fn read_env_file(path: &std::path::Path) -> Option<Vec<(String, String)>> {
             .collect(),
     )
 }
-
-// ---------------------------------------------------------------------------
-// tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -686,7 +555,7 @@ mod tests {
 
     #[test]
     fn test_auth_method_jwt_from_file() {
-        let tmp = std::env::temp_dir().join("vaultenv_test_jwt_new.txt");
+        let tmp = std::env::temp_dir().join("vaultenv_test_jwt_ref.txt");
         std::fs::write(&tmp, "file-jwt-token\n").unwrap();
         let opts = Options {
             method: "jwt".to_string(),
@@ -711,7 +580,6 @@ mod tests {
         assert!(opts.validate().is_err());
     }
 
-    // Helper to build Options with only the required fields populated.
     fn make_minimal() -> Options {
         Options {
             host: "localhost".to_string(),
@@ -740,10 +608,10 @@ mod tests {
             inherit_env_blacklist: Vec::new(),
             retry_base_delay_ms: 40,
             retry_attempts: 9,
-            log_level: LogLevelArg(LogLevel::Error),
+            log_level: LogLevelArg::default(),
             use_path: false,
             max_concurrent_requests: 8,
-            duplicate_behavior: DuplicateBehaviorArg(DuplicateBehavior::Error),
+            duplicate_behavior: DuplicateBehaviorArg::default(),
         }
     }
 }
