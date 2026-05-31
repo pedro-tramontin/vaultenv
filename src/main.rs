@@ -2,6 +2,7 @@ use std::os::unix::ffi::OsStrExt;
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use tracing::info;
 
 use vaultenv::{
     config::{LogLevel, Options},
@@ -20,7 +21,20 @@ async fn main() {
 async fn run() -> Result<()> {
     let mut opts = Options::parse();
 
+    // Initialise tracing subscriber based on requested log level.
+    let filter = match opts.log_level.0 {
+        LogLevel::Error => tracing::Level::ERROR,
+        LogLevel::Info => tracing::Level::INFO,
+    };
+    tracing_subscriber::fmt()
+        .with_max_level(filter)
+        .with_writer(std::io::stderr)
+        .init();
+
+    info!("vaultenv {}", env!("CARGO_PKG_VERSION"));
+
     // Phase 2 config resolution
+    info!("Resolving configuration…");
     opts.resolve_addr().context("invalid VAULT_ADDR")?;
     opts.resolve_auth_backend();
     opts.validate().context("invalid configuration")?;
@@ -30,12 +44,17 @@ async fn run() -> Result<()> {
     }
 
     // Phase 3 secrets file
+    info!(
+        path = %opts.secrets_file.display(),
+        "Reading secrets file"
+    );
     let secrets = read_secrets_file(&opts.secrets_file)
         .map_err(|e| anyhow::anyhow!("failed to read secrets file: {e}"))?;
 
     if secrets.is_empty() {
         anyhow::bail!("no secrets specified in {}", opts.secrets_file.display());
     }
+    info!(count = secrets.len(), "Secrets loaded");
 
     // Phase 4 Vault client
     let client = VaultClient::new(
@@ -48,34 +67,50 @@ async fn run() -> Result<()> {
     )
     .map_err(|e| anyhow::anyhow!("failed to create Vault client: {e}"))?;
 
-    // Authenticate (resolves GitHub / Kubernetes → Vault token)
+    // Authenticate
     let auth_method = opts.auth_method();
+    info!(backend = opts.auth_backend.as_deref(), "Authenticating to Vault");
     let client = client
         .authenticate(&auth_method, opts.auth_backend.as_deref())
         .await
         .map_err(|e| anyhow::anyhow!("authentication failed: {e}"))?;
+    info!("Vault authentication successful");
 
-    // Discover mount info (KV1 vs KV2)
+    // Discover mount info
+    info!("Discovering mount info");
     let mount_info = client
         .get_mount_info()
         .await
         .map_err(|e| anyhow::anyhow!("mount info discovery failed: {e}"))?;
 
     // Fetch secrets concurrently
+    info!(
+        count = secrets.len(),
+        max_concurrent = opts.max_concurrent_requests,
+        "Fetching secrets from Vault"
+    );
     let vault_data = client
         .get_secrets(&mount_info, &secrets, opts.max_concurrent_requests)
         .await
         .map_err(|e| anyhow::anyhow!("secret fetching failed: {e}"))?;
 
     // Resolve (var_name, value) pairs
+    info!("Resolving secret values");
     let mut secret_env = resolve_secrets(&mount_info, &secrets, &vault_data)
         .map_err(|e| anyhow::anyhow!("secret resolution failed: {e}"))?;
 
     // Deduplicate
+    info!("Checking for duplicate environment variables");
     secret_env = deduplicate(secret_env, opts.duplicate_behavior.0)
         .map_err(|e| anyhow::anyhow!("duplicate variable check failed: {e}"))?;
 
+    info!(
+        count = secret_env.len(),
+        "Secrets resolved and deduplicated"
+    );
+
     // Build final environment
+    info!(inherit = opts.inherit_env, "Building process environment");
     let mut env: Vec<(String, String)> = if opts.inherit_env {
         let blacklist: std::collections::HashSet<String> =
             opts.inherit_env_blacklist.iter().cloned().collect();
@@ -109,6 +144,7 @@ async fn run() -> Result<()> {
     } else {
         std::path::PathBuf::from(&opts.cmd)
     };
+    info!(program = %opts.cmd, path = ?program, "Preparing to exec");
 
     let args: Vec<std::ffi::CString> = std::iter::once(opts.cmd.clone())
         .chain(opts.args)
