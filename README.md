@@ -2,17 +2,18 @@
 
 Run programs with secrets from [HashiCorp Vault](https://www.vaultproject.io/).
 
-A Rust rewrite of the Haskell [`vaultenv`](https://github.com/channable/vaultenv) tool. It reads a secrets file, fetches values from Vault, injects them into the environment, and `execve`s into your program — replacing the vaultenv process entirely.
+A Rust rewrite of [`vaultenv`](https://github.com/channable/vaultenv). It reads a secrets file, fetches values from Vault, injects them into the environment, and `execve`s into your program — replacing the vaultenv process entirely.
 
 ---
 
 ## Features
 
-- **V2 KV engine only** — modern Vault deployments; V1 support was explicitly dropped for simplicity.
-- **Multiple auth backends** — direct Vault token, GitHub personal access token, Kubernetes JWT.
+- **V2 KV engine only** — modern Vault deployments.
+- **Vault CLI-compatible auth** — uses `--method=<TYPE>` + `KEY=VALUE` conventions.
+- **10 auth backends** — token, GitHub, Kubernetes, AppRole, LDAP, Okta, Azure, GCP, AWS EC2, JWT/OIDC.
 - **Concurrent fetching** — bounded by a semaphore to avoid overwhelming Vault.
-- **Automatic retry** — exponential backoff with jitter on 5xx and connection errors via `backon`.
-- **Environment merging** — inherit parent env, blacklist specific variables, deduplicate with configurable behavior (error, keep, overwrite).
+- **Automatic retry** — exponential backoff with jitter via `backon`.
+- **Environment merging** — inherit parent env, blacklist specific variables, deduplicate.
 - **PATH search** — optionally resolve the command via `PATH`.
 - **Structured logging** — `tracing`-based info-level progress reporting.
 
@@ -57,7 +58,7 @@ export VAULT_TOKEN="hvs.xxx"
 vaultenv --secrets-file ./secrets.env -- ./my-app
 ```
 
-The `DATABASE_URL` and `REDIS_PASSWORD` variables will be fetched from Vault and injected into `my-app`'s environment before the process is started.
+The `DATABASE_URL` and `REDIS_PASSWORD` variables will be fetched from Vault and injected into `my-app`'s environment.
 
 ---
 
@@ -85,7 +86,9 @@ Auto-generated names convert dashes and slashes to underscores. For example, `ap
 
 ---
 
-## CLI Options & Environment Variables
+## CLI Options
+
+### Global flags
 
 Every CLI flag has a corresponding environment variable:
 
@@ -95,24 +98,6 @@ Every CLI flag has a corresponding environment variable:
 | `--port` | `VAULT_PORT` | `8200` | Vault port |
 | `--addr` | `VAULT_ADDR` | — | Full URL (`scheme://host:port`). Overrides host/port/TLS. |
 | `--secrets-file` | `VAULTENV_SECRETS_FILE` | — | Path to secrets file **(required)** |
-| `--token` | `VAULT_TOKEN` | — | Direct Vault token |
-| `--github-token` | `VAULTENV_GITHUB_TOKEN` | — | GitHub PAT for Vault GitHub auth |
-| `--kubernetes-role` | `VAULTENV_KUBERNETES_ROLE` | — | K8s role for Vault Kubernetes auth |
-| `--auth-backend` | `VAULT_AUTH_BACKEND` | — | Override auth backend name |
-| `--jwt-role` | `VAULTENV_JWT_ROLE` | — | JWT role for Vault JWT/OIDC auth |
-| `--jwt-token` | `VAULTENV_JWT_TOKEN` | — | JWT token value (direct) |
-| `--jwt-token-file` | `VAULTENV_JWT_TOKEN_FILE` | — | Path to file containing JWT token |
-| `--approle-role-id` | `VAULTENV_APPROLE_ROLE_ID` | — | AppRole role ID |
-| `--approle-secret-id` | `VAULTENV_APPROLE_SECRET_ID` | — | AppRole secret ID |
-| `--ldap-username` | `VAULTENV_LDAP_USERNAME` | — | LDAP username |
-| `--ldap-password` | `VAULTENV_LDAP_PASSWORD` | — | LDAP password |
-| `--okta-username` | `VAULTENV_OKTA_USERNAME` | — | Okta username |
-| `--okta-password` | `VAULTENV_OKTA_PASSWORD` | — | Okta password |
-| `--azure-role` | `VAULTENV_AZURE_ROLE` | — | Azure role for Vault azure auth (instance mode) |
-| `--azure-resource` | `VAULTENV_AZURE_RESOURCE` | `https://management.azure.com/` | Azure resource URL for MSI |
-| `--gcp-gce-role` | `VAULTENV_GCP_GCE_ROLE` | — | GCP GCE role for Vault GCP auth |
-| `--aws-ec2-role` | `VAULTENV_AWS_EC2_ROLE` | — | AWS EC2 role for Vault AWS auth |
-| `--aws-ec2-signature-type` | `VAULTENV_AWS_EC2_SIGNATURE_TYPE` | `pkcs7` | EC2 signature type: `pkcs7`, `identity`, `rsa2048` |
 | `--connect-tls` | `VAULTENV_CONNECT_TLS` | `true` | Use TLS |
 | `--validate-certs` | `VAULTENV_VALIDATE_CERTS` | `true` | Validate TLS certificates |
 | `--inherit-env` | `VAULTENV_INHERIT_ENV` | `true` | Inherit parent environment |
@@ -125,47 +110,49 @@ Every CLI flag has a corresponding environment variable:
 | `--use-path` | `VAULTENV_USE_PATH` | `false` | Search `PATH` for the command |
 | `--help`, `--version` | — | — | Clap built-ins |
 
-### Authentication priority
+### Auth method flags
 
-If multiple credentials are provided, resolution order is:
+vaultenv follows the Vault CLI convention:
 
-1. `--token` (`VAULT_TOKEN`)
-2. `--github-token` (`VAULTENV_GITHUB_TOKEN`)
-3. `--kubernetes-role` (`VAULTENV_KUBERNETES_ROLE`)
-4. `--approle-role-id` + `--approle-secret-id` (`VAULTENV_APPROLE_*`)
-5. `--ldap-username` + `--ldap-password` (`VAULTENV_LDAP_*`)
-6. `--okta-username` + `--okta-password` (`VAULTENV_OKTA_*`)
-7. `--azure-role` (`VAULTENV_AZURE_ROLE`)
-8. `--gcp-gce-role` (`VAULTENV_GCP_GCE_ROLE`)
-9. `--aws-ec2-role` (`VAULTENV_AWS_EC2_ROLE`)
-10. `--jwt-role` + `--jwt-token` / `--jwt-token-file` (`VAULTENV_JWT_*`)
-11. None (unauthenticated)
+```bash
+vaultenv --method=<TYPE> [method-specific flags...] --secrets-file secrets -- CMD
+```
 
-When `--auth-backend` is omitted, it defaults from the detected auth method:
-| Method | Default mount |
-|---|---|
-| Token / None | no backend login needed |
-| GitHub | `github` |
-| Kubernetes | `kubernetes` |
-| AppRole | `approle` |
-| LDAP | `ldap` |
-| Okta | `okta` |
-| Azure | `azure` |
-| GCP | `gcp` |
-| AWS EC2 | `aws` |
-| JWT | `jwt` |
+| Method | Flag | Description |
+|--------|------|-------------|
+| **token** (default) | `--token <VAULT_TOKEN>` | Direct Vault token |
+| **github** | `--token <GITHUB_PAT>` | GitHub personal access token |
+| **kubernetes** | `--role <ROLE>` | K8s reads SA token automatically from `/var/run/secrets/...` |
+| **approle** | `--role-id <ID>`, `--secret-id <ID>` | AppRole credentials |
+| **ldap** | `--username <USER>`, `--password <PASS>` | LDAP credentials |
+| **okta** | `--username <USER>`, `--password <PASS>` | Okta credentials |
+| **azure** | `--role <ROLE>`, `[--resource <URL>]` | Auto-fetches MSI token + VM metadata |
+| **gcp** | `--role <ROLE>` | Auto-fetches GCE identity JWT |
+| **aws** | `--role <ROLE>`, `[--signature-type <TYPE>]` | Auto-fetches EC2 metadata |
+| **jwt** | `--role <ROLE>`, `--jwt <TOKEN>` or `--jwt-file <PATH>` | Pre-exchanged JWT |
 
----
+Custom mount paths (like Vault's `-path=`):
 
-## Configuration Files
+```bash
+# Vault mounted at auth/oidc
+vaultenv --method=jwt --path=oidc --role=ci-role --jwt-file=/tmp/token -- ...
+```
 
-vaultenv reads optional environment files in this order:
+**Flag parity table:**
 
-1. `/etc/vaultenv.conf`
-2. `~/.config/vaultenv/vaultenv.conf`
-3. `./vaultenv.conf`
-
-Format: `KEY=value` lines, `#` comments.
+| What you need | Vault CLI (`vault login`) | vaultenv CLI |
+|---------------|-----------------|----------------|
+| Direct token | `vault login token=hvs.xxx` (default) | `vaultenv --token=hvs.xxx` (default) |
+| GitHub | `vault login -method=github token=ghp_xxx` | `vaultenv --method=github --token=ghp_xxx` |
+| Kubernetes | `vault login -method=kubernetes role=my-role` | `vaultenv --method=kubernetes --role=my-role` |
+| AppRole | `vault login -method=approle role_id=xxx secret_id=yyy` | `vaultenv --method=approle --role-id=xxx --secret-id=yyy` |
+| LDAP | `vault login -method=ldap username=alice password=p@ss` | `vaultenv --method=ldap --username=alice --password=p@ss` |
+| Okta | `vault login -method=okta username=alice password=p@ss` | `vaultenv --method=okta --username=alice --password=p@ss` |
+| Azure | `vault login -method=azure role=... jwt=...` | `vaultenv --method=azure --role=...` (auto-fetches jwt) |
+| GCP | `vault login -method=gcp role=... jwt=...` | `vaultenv --method=gcp --role=...` (auto-fetches jwt) |
+| AWS EC2 | `vault login -method=aws role=...` | `vaultenv --method=aws --role=...` (auto-fetches metadata) |
+| JWT | `vault login -method=jwt role=... jwt=...` | `vaultenv --method=jwt --role=... --jwt=...` |
+| OIDC mount | `vault login -method=jwt -path=oidc role=... jwt=...` | `vaultenv --method=jwt --path=oidc --role=... --jwt=...` |
 
 ---
 
@@ -238,33 +225,16 @@ cargo test --test end_to_end
 
 ### Process replacement
 
-Unlike `std::process::Command::exec`, which spawns a child, vaultenv uses `nix::unistd::execve` to **replace** the current process image. This means:
-- The target program inherits the same PID.
-- No vaultenv process remains in memory after handoff.
-- Signal handling is delegated entirely to the child program.
+vaultenv resolves all secrets, builds the environment, and calls `execve` to replace itself with the target program. This means:
 
-### Logging conventions
-
-All log output goes to **stderr** to avoid polluting stdout of the wrapped program.
-
-- `info!` spans mark major pipeline milestones ("Authenticating", "Fetching secrets", "Preparing to exec").
-- Structured fields use `tracing` key-value pairs (`count`, `path`, `backend`, etc.).
-- Errors are propagated as typed `VaultError` values and logged at the top-level `#[tokio::main]` boundary.
-
-Set `--log-level info` to see the full pipeline trace.
+- No vaultenv process remains in the background.
+- Signals go directly to the child.
+- The child PID is the same as the original vaultenv PID (under `execve`).
 
 ---
 
 ## License
 
-This project contains work derived from the original vaultenv (Copyright 2017,
-Channable, BSD-3-Clause) and new original Rust authorship (Apache-2.0).
+This project is dual-licensed under [Apache-2.0](LICENSE) OR [BSD-3-Clause](LICENSE).
 
-See [LICENSE](LICENSE) for the full dual-licensing terms.
-
----
-
-## Credits
-
-This project is a ground-up Rust rewrite of the original vaultenv.
-See [LICENSE](LICENSE) for attribution and copyright notices.
+The Rust implementation is licensed under Apache-2.0. It is a derivative work of the original `vaultenv` project, which was licensed under the BSD-3-Clause license (Copyright 2017). See the `LICENSE` file for the full dual-license text and attribution notices.
