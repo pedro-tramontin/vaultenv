@@ -99,6 +99,9 @@ Every CLI flag has a corresponding environment variable:
 | `--github-token` | `VAULTENV_GITHUB_TOKEN` | — | GitHub PAT for Vault GitHub auth |
 | `--kubernetes-role` | `VAULTENV_KUBERNETES_ROLE` | — | K8s role for Vault Kubernetes auth |
 | `--auth-backend` | `VAULT_AUTH_BACKEND` | — | Override auth backend name |
+| `--jwt-role` | `VAULTENV_JWT_ROLE` | — | JWT role for Vault JWT/OIDC auth |
+| `--jwt-token` | `VAULTENV_JWT_TOKEN` | — | JWT token value (direct) |
+| `--jwt-token-file` | `VAULTENV_JWT_TOKEN_FILE` | — | Path to file containing JWT token |
 | `--approle-role-id` | `VAULTENV_APPROLE_ROLE_ID` | — | AppRole role ID |
 | `--approle-secret-id` | `VAULTENV_APPROLE_SECRET_ID` | — | AppRole secret ID |
 | `--ldap-username` | `VAULTENV_LDAP_USERNAME` | — | LDAP username |
@@ -129,12 +132,28 @@ If multiple credentials are provided, resolution order is:
 1. `--token` (`VAULT_TOKEN`)
 2. `--github-token` (`VAULTENV_GITHUB_TOKEN`)
 3. `--kubernetes-role` (`VAULTENV_KUBERNETES_ROLE`)
-4. None (unauthenticated)
+4. `--approle-role-id` + `--approle-secret-id` (`VAULTENV_APPROLE_*`)
+5. `--ldap-username` + `--ldap-password` (`VAULTENV_LDAP_*`)
+6. `--okta-username` + `--okta-password` (`VAULTENV_OKTA_*`)
+7. `--azure-role` (`VAULTENV_AZURE_ROLE`)
+8. `--gcp-gce-role` (`VAULTENV_GCP_GCE_ROLE`)
+9. `--aws-ec2-role` (`VAULTENV_AWS_EC2_ROLE`)
+10. `--jwt-role` + `--jwt-token` / `--jwt-token-file` (`VAULTENV_JWT_*`)
+11. None (unauthenticated)
 
 When `--auth-backend` is omitted, it defaults from the detected auth method:
-- GitHub → `github`
-- Kubernetes → `kubernetes`
-- Token / None → no backend login needed
+| Method | Default mount |
+|---|---|
+| Token / None | no backend login needed |
+| GitHub | `github` |
+| Kubernetes | `kubernetes` |
+| AppRole | `approle` |
+| LDAP | `ldap` |
+| Okta | `okta` |
+| Azure | `azure` |
+| GCP | `gcp` |
+| AWS EC2 | `aws` |
+| JWT | `jwt` |
 
 ---
 

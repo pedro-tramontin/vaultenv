@@ -60,6 +60,8 @@ pub enum AuthMethod {
         role: String,
         signature_type: crate::cloud_metadata::Ec2SignatureType,
     },
+    /// Authenticate via JWT/OIDC pre-exchanged token.
+    Jwt { role: String, token: String },
 }
 
 /// All configuration resolved from CLI, environment variables, and defaults.
@@ -141,6 +143,18 @@ pub struct Options {
     /// AWS EC2 signature type (pkcs7, identity, rsa2048).
     #[arg(long, env = "VAULTENV_AWS_EC2_SIGNATURE_TYPE", default_value = "pkcs7")]
     pub aws_ec2_signature_type: crate::cloud_metadata::Ec2SignatureTypeArg,
+
+    /// JWT role for Vault auth.
+    #[arg(long, env = "VAULTENV_JWT_ROLE")]
+    pub jwt_role: Option<String>,
+
+    /// JWT token for Vault auth (direct value; prefer --jwt-token-file).
+    #[arg(long, env = "VAULTENV_JWT_TOKEN")]
+    pub jwt_token: Option<String>,
+
+    /// Path to file containing JWT token for Vault auth.
+    #[arg(long, env = "VAULTENV_JWT_TOKEN_FILE")]
+    pub jwt_token_file: Option<PathBuf>,
 
     /// Path to the secrets file.
     #[arg(long, env = "VAULTENV_SECRETS_FILE")]
@@ -253,15 +267,17 @@ impl Options {
             &self.azure_role,
             &self.gcp_gce_role,
             &self.aws_ec2_role,
+            &self.jwt_role,
         ) {
-            (_, Some(_), _, _, _, _, _, _, _) => Some("github".to_string()),
-            (_, _, Some(_), _, _, _, _, _, _) => Some("kubernetes".to_string()),
-            (_, _, _, Some(_), _, _, _, _, _) => Some("approle".to_string()),
-            (_, _, _, _, Some(_), _, _, _, _) => Some("ldap".to_string()),
-            (_, _, _, _, _, Some(_), _, _, _) => Some("okta".to_string()),
-            (_, _, _, _, _, _, Some(_), _, _) => Some("azure".to_string()),
-            (_, _, _, _, _, _, _, Some(_), _) => Some("gcp".to_string()),
-            (_, _, _, _, _, _, _, _, Some(_)) => Some("aws".to_string()),
+            (_, Some(_), _, _, _, _, _, _, _, _) => Some("github".to_string()),
+            (_, _, Some(_), _, _, _, _, _, _, _) => Some("kubernetes".to_string()),
+            (_, _, _, Some(_), _, _, _, _, _, _) => Some("approle".to_string()),
+            (_, _, _, _, Some(_), _, _, _, _, _) => Some("ldap".to_string()),
+            (_, _, _, _, _, Some(_), _, _, _, _) => Some("okta".to_string()),
+            (_, _, _, _, _, _, Some(_), _, _, _) => Some("azure".to_string()),
+            (_, _, _, _, _, _, _, Some(_), _, _) => Some("gcp".to_string()),
+            (_, _, _, _, _, _, _, _, Some(_), _) => Some("aws".to_string()),
+            (_, _, _, _, _, _, _, _, _, Some(_)) => Some("jwt".to_string()),
             _ => None,
         };
     }
@@ -311,6 +327,23 @@ impl Options {
                 role: role.clone(),
                 signature_type: self.aws_ec2_signature_type.0,
             };
+        }
+        if let (Some(role), Some(token)) = (&self.jwt_role, &self.jwt_token) {
+            return AuthMethod::Jwt {
+                role: role.clone(),
+                token: token.clone(),
+            };
+        }
+        if let Some(role) = &self.jwt_role {
+            if let Some(ref token_file) = self.jwt_token_file {
+                let token = std::fs::read_to_string(token_file)
+                    .with_context(|| format!("failed to read jwt token file: {:?}", token_file))
+                    .expect("jwt token file read failed");
+                return AuthMethod::Jwt {
+                    role: role.clone(),
+                    token: token.trim().to_string(),
+                };
+            }
         }
         AuthMethod::None
     }
@@ -704,6 +737,68 @@ mod tests {
     }
 
     #[test]
+    fn test_auth_backend_default_jwt() {
+        let mut opts = Options {
+            jwt_role: Some("ci-role".to_string()),
+            ..make_minimal()
+        };
+        opts.resolve_auth_backend();
+        assert_eq!(opts.auth_backend, Some("jwt".to_string()));
+    }
+
+    #[test]
+    fn test_auth_method_jwt_direct() {
+        let opts = Options {
+            jwt_role: Some("ci-role".to_string()),
+            jwt_token: Some("my-jwt-token".to_string()),
+            ..make_minimal()
+        };
+        match opts.auth_method() {
+            AuthMethod::Jwt { role, token } => {
+                assert_eq!(role, "ci-role");
+                assert_eq!(token, "my-jwt-token");
+            }
+            other => panic!("expected Jwt, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_auth_method_jwt_from_file() {
+        let tmp = std::env::temp_dir().join("vaultenv_test_jwt.txt");
+        std::fs::write(&tmp, "file-jwt-token\n").unwrap();
+        let opts = Options {
+            jwt_role: Some("ci-role".to_string()),
+            jwt_token_file: Some(tmp.clone()),
+            ..make_minimal()
+        };
+        match opts.auth_method() {
+            AuthMethod::Jwt { role, token } => {
+                assert_eq!(role, "ci-role");
+                assert_eq!(token, "file-jwt-token");
+            }
+            other => panic!("expected Jwt, got {other:?}"),
+        }
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn test_auth_method_jwt_direct_takes_precedence() {
+        let tmp = std::env::temp_dir().join("vaultenv_test_jwt_prec.txt");
+        std::fs::write(&tmp, "from-file").unwrap();
+        let opts = Options {
+            jwt_role: Some("ci-role".to_string()),
+            jwt_token: Some("from-direct".to_string()),
+            jwt_token_file: Some(tmp.clone()),
+            ..make_minimal()
+        };
+        match opts.auth_method() {
+            AuthMethod::Jwt { token, .. } => assert_eq!(token, "from-direct"),
+            other => panic!("expected Jwt, got {other:?}"),
+        }
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
     fn test_validate_missing_cmd() {
         let mut opts = make_minimal();
         opts.cmd.clear();
@@ -733,6 +828,9 @@ mod tests {
             aws_ec2_signature_type: crate::cloud_metadata::Ec2SignatureTypeArg(
                 crate::cloud_metadata::Ec2SignatureType::Pkcs7,
             ),
+            jwt_role: None,
+            jwt_token: None,
+            jwt_token_file: None,
             secrets_file: PathBuf::from("/dev/null"),
             cmd: "echo".to_string(),
             args: Vec::new(),

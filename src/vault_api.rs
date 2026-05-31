@@ -459,6 +459,25 @@ impl VaultClient {
                 .await?;
                 Ok(self.with_token(resp.auth.client_token))
             }
+            AuthMethod::Jwt { role, token } => {
+                let backend = backend.unwrap_or("jwt");
+                let body = serde_json::json!({ "role": role, "jwt": token });
+                let path = format!("/v1/auth/{backend}/login");
+                let client = self.clone();
+                let resp: ClientToken = (|| async {
+                    client
+                        .do_unauthenticated_json_request::<ClientToken>(
+                            reqwest::Method::POST,
+                            &path,
+                            Some(body.clone()),
+                        )
+                        .await
+                })
+                .retry(self.retry_builder)
+                .when(is_retryable)
+                .await?;
+                Ok(self.with_token(resp.auth.client_token))
+            }
         }
     }
 
