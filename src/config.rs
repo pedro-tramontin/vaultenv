@@ -4,8 +4,10 @@
 //! Uses `clap` for CLI argument parsing with `#[command(env)]` support
 //! to eliminate the manual env-var-override boilerplate.
 
+use anyhow::{Context, Result};
 use clap::Parser;
 use std::path::PathBuf;
+use url::Url;
 
 /// Log level for vaultenv output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
@@ -134,6 +136,86 @@ pub struct Options {
     pub duplicate_behavior: DuplicateBehaviorArg,
 }
 
+impl Options {
+    /// Resolve `VAULT_ADDR` if present, overriding host/port/connect_tls.
+    /// Returns an error if the address is malformed or contains a non-empty path.
+    pub fn resolve_addr(&mut self) -> Result<()> {
+        let Some(ref addr_str) = self.addr else {
+            return Ok(());
+        };
+
+        let url = Url::parse(addr_str)
+            .with_context(|| format!("failed to parse VAULT_ADDR: {}", addr_str))?;
+
+        if url.path() != "/" && !url.path().is_empty() {
+            anyhow::bail!(
+                "VAULT_ADDR '{}' contains a non-empty path '{}'. Only scheme://host:port is supported.",
+                addr_str,
+                url.path()
+            );
+        }
+
+        let scheme = url.scheme();
+        let tls = match scheme {
+            "https" => true,
+            "http" => false,
+            _ => anyhow::bail!(
+                "VAULT_ADDR '{}' has unsupported scheme '{}'. Use http:// or https://.",
+                addr_str,
+                scheme
+            ),
+        };
+
+        // Override host/port/tls from the parsed URL
+        self.host = url.host_str().unwrap_or("localhost").to_string();
+        self.port = url
+            .port_or_known_default()
+            .unwrap_or(if tls { 443 } else { 80 });
+        self.connect_tls = tls;
+
+        Ok(())
+    }
+
+    /// Resolve the auth backend name, defaulting from auth method if not set.
+    pub fn resolve_auth_backend(&mut self) {
+        if self.auth_backend.is_some() {
+            return;
+        }
+        self.auth_backend = match (&self.token, &self.github_token, &self.kubernetes_role) {
+            (_, Some(_), _) => Some("github".to_string()),
+            (_, _, Some(_)) => Some("kubernetes".to_string()),
+            _ => None,
+        };
+    }
+
+    /// Determine the effective authentication method from parsed tokens/roles.
+    pub fn auth_method(&self) -> AuthMethod {
+        if let Some(ref token) = self.token {
+            return AuthMethod::VaultToken {
+                token: token.clone(),
+            };
+        }
+        if let Some(ref gh) = self.github_token {
+            return AuthMethod::GitHub(gh.clone());
+        }
+        if let Some(ref role) = self.kubernetes_role {
+            return AuthMethod::Kubernetes { role: role.clone() };
+        }
+        AuthMethod::None
+    }
+
+    /// Validate that all required fields are present.
+    pub fn validate(&self) -> Result<()> {
+        if self.secrets_file.as_os_str().is_empty() {
+            anyhow::bail!("--secrets-file is required");
+        }
+        if self.cmd.is_empty() {
+            anyhow::bail!("CMD is required");
+        }
+        Ok(())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // clap value parsers for enum types
 // ---------------------------------------------------------------------------
@@ -200,6 +282,184 @@ impl std::fmt::Display for DuplicateBehaviorArg {
             DuplicateBehavior::Error => write!(f, "error"),
             DuplicateBehavior::Keep => write!(f, "keep"),
             DuplicateBehavior::Overwrite => write!(f, "overwrite"),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Env-file loading (from /etc/vaultenv.conf, ~/.config/vaultenv/vaultenv.conf, ./vaultenv.conf)
+// ---------------------------------------------------------------------------
+
+/// Read environment files in standard locations and return their contents
+/// as a list of (key, value) pairs per file.
+pub fn read_env_files() -> Vec<Vec<(String, String)>> {
+    let mut result = Vec::new();
+
+    let machine = PathBuf::from("/etc/vaultenv.conf");
+    if let Some(vars) = read_env_file(&machine) {
+        result.push(vars);
+    }
+
+    if let Some(xdg) = dirs::config_dir() {
+        let user = xdg.join("vaultenv").join("vaultenv.conf");
+        if let Some(vars) = read_env_file(&user) {
+            result.push(vars);
+        }
+    }
+
+    let cwd = PathBuf::from("./vaultenv.conf");
+    if let Some(vars) = read_env_file(&cwd) {
+        result.push(vars);
+    }
+
+    result
+}
+
+fn read_env_file(path: &std::path::Path) -> Option<Vec<(String, String)>> {
+    let content = std::fs::read_to_string(path).ok()?;
+    Some(
+        content
+            .lines()
+            .filter_map(|line| {
+                let line = line.trim();
+                if line.is_empty() || line.starts_with('#') {
+                    return None;
+                }
+                line.split_once('=')
+                    .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
+            })
+            .collect(),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_addr_https() {
+        let mut opts = Options {
+            host: "old".to_string(),
+            port: 9999,
+            addr: Some("https://vault.example.com:8200".to_string()),
+            ..make_minimal()
+        };
+        opts.resolve_addr().unwrap();
+        assert_eq!(opts.host, "vault.example.com");
+        assert_eq!(opts.port, 8200);
+        assert!(opts.connect_tls);
+    }
+
+    #[test]
+    fn test_resolve_addr_http_defaults_port() {
+        let mut opts = Options {
+            host: "old".to_string(),
+            port: 9999,
+            addr: Some("http://vault.example.com".to_string()),
+            ..make_minimal()
+        };
+        opts.resolve_addr().unwrap();
+        assert_eq!(opts.host, "vault.example.com");
+        assert_eq!(opts.port, 80);
+        assert!(!opts.connect_tls);
+    }
+
+    #[test]
+    fn test_resolve_addr_rejects_path() {
+        let mut opts = Options {
+            addr: Some("https://vault.example.com:8200/foo".to_string()),
+            ..make_minimal()
+        };
+        assert!(opts.resolve_addr().is_err());
+    }
+
+    #[test]
+    fn test_resolve_addr_rejects_bad_scheme() {
+        let mut opts = Options {
+            addr: Some("ftp://vault.example.com".to_string()),
+            ..make_minimal()
+        };
+        assert!(opts.resolve_addr().is_err());
+    }
+
+    #[test]
+    fn test_auth_backend_default_github() {
+        let mut opts = Options {
+            github_token: Some("ghp_xxx".to_string()),
+            ..make_minimal()
+        };
+        opts.resolve_auth_backend();
+        assert_eq!(opts.auth_backend, Some("github".to_string()));
+    }
+
+    #[test]
+    fn test_auth_backend_default_kubernetes() {
+        let mut opts = Options {
+            kubernetes_role: Some("my-app".to_string()),
+            ..make_minimal()
+        };
+        opts.resolve_auth_backend();
+        assert_eq!(opts.auth_backend, Some("kubernetes".to_string()));
+    }
+
+    #[test]
+    fn test_auth_backend_keeps_explicit() {
+        let mut opts = Options {
+            auth_backend: Some("custom".to_string()),
+            github_token: Some("ghp_xxx".to_string()),
+            ..make_minimal()
+        };
+        opts.resolve_auth_backend();
+        assert_eq!(opts.auth_backend, Some("custom".to_string()));
+    }
+
+    #[test]
+    fn test_auth_method_token() {
+        let opts = Options {
+            token: Some("hvs.xxx".to_string()),
+            ..make_minimal()
+        };
+        assert!(
+            matches!(opts.auth_method(), AuthMethod::VaultToken { token } if token == "hvs.xxx")
+        );
+    }
+
+    #[test]
+    fn test_auth_method_none() {
+        let opts = make_minimal();
+        assert!(matches!(opts.auth_method(), AuthMethod::None));
+    }
+
+    #[test]
+    fn test_validate_missing_cmd() {
+        let mut opts = make_minimal();
+        opts.cmd.clear();
+        assert!(opts.validate().is_err());
+    }
+
+    // Helper to build Options with only the required fields populated.
+    fn make_minimal() -> Options {
+        Options {
+            host: "localhost".to_string(),
+            port: 8200,
+            addr: None,
+            auth_backend: None,
+            token: None,
+            github_token: None,
+            kubernetes_role: None,
+            secrets_file: PathBuf::from("/dev/null"),
+            cmd: "echo".to_string(),
+            args: Vec::new(),
+            connect_tls: true,
+            validate_certs: true,
+            inherit_env: true,
+            inherit_env_blacklist: Vec::new(),
+            retry_base_delay_ms: 40,
+            retry_attempts: 9,
+            log_level: LogLevelArg(LogLevel::Error),
+            use_path: false,
+            max_concurrent_requests: 8,
+            duplicate_behavior: DuplicateBehaviorArg(DuplicateBehavior::Error),
         }
     }
 }
