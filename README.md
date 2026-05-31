@@ -1,5 +1,9 @@
 # vaultenv
 
+[![CI](https://github.com/pedro-tramontin/vaultenv/actions/workflows/ci.yml/badge.svg)](https://github.com/pedro-tramontin/vaultenv/actions/workflows/ci.yml)
+[![Extended Checks](https://github.com/pedro-tramontin/vaultenv/actions/workflows/extended.yml/badge.svg)](https://github.com/pedro-tramontin/vaultenv/actions/workflows/extended.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0%20OR%20BSD--3-blue.svg)](LICENSE)
+
 Run programs with secrets from [HashiCorp Vault](https://www.vaultproject.io/).
 
 This project is inspired by the original [`vaultenv`](https://github.com/channable/vaultenv) (Haskell, created by [Channable](https://www.channable.com/)). It preserves the core idea — reading a secrets file, fetching values from Vault, injecting them into the environment, and replacing itself via `execve` — but reimagines the interface and significantly expands the feature set.
