@@ -1,8 +1,9 @@
 //! Configuration parsing and validation.
 //!
-//! Ports the logic from Haskell's `Config.hs` to Rust.
 //! Uses `clap` for CLI argument parsing with `#[command(env)]` support
 //! to eliminate the manual env-var-override boilerplate.
+//!
+//! Flags are aligned with the Vault CLI `-method=<TYPE>` + `KEY=VALUE` conventions.
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -84,77 +85,57 @@ pub struct Options {
     #[arg(long, env = "VAULT_ADDR")]
     pub addr: Option<String>,
 
-    /// Vault authentication backend name.
-    #[arg(long, env = "VAULT_AUTH_BACKEND")]
-    pub auth_backend: Option<String>,
+    /// Authentication method (token, github, kubernetes, approle, ldap, okta,
+    /// azure, gcp, aws, jwt).  Defaults to "token".
+    #[arg(long, env = "VAULTENV_METHOD", default_value = "token")]
+    pub method: String,
 
-    /// Direct Vault token.
+    /// Mount path for the auth backend (e.g. "oidc" for auth/oidc).
+    /// Defaults to the method name.
+    #[arg(long, env = "VAULTENV_PATH")]
+    pub path: Option<String>,
+
+    /// Vault token (for `--method=token` or as the GitHub PAT when
+    /// `--method=github`).
     #[arg(long, env = "VAULT_TOKEN")]
     pub token: Option<String>,
 
-    /// GitHub personal access token for Vault auth.
-    #[arg(long, env = "VAULTENV_GITHUB_TOKEN")]
-    pub github_token: Option<String>,
+    /// Role name (required for kubernetes, azure, gcp, aws, jwt methods).
+    #[arg(long, env = "VAULTENV_ROLE")]
+    pub role: Option<String>,
 
-    /// Kubernetes role for Vault auth.
-    #[arg(long, env = "VAULTENV_KUBERNETES_ROLE")]
-    pub kubernetes_role: Option<String>,
+    /// AppRole role ID (for `--method=approle`).
+    #[arg(long, env = "VAULTENV_ROLE_ID")]
+    pub role_id: Option<String>,
 
-    /// AppRole role ID for Vault auth.
-    #[arg(long, env = "VAULTENV_APPROLE_ROLE_ID")]
-    pub approle_role_id: Option<String>,
+    /// AppRole secret ID (for `--method=approle`).
+    #[arg(long, env = "VAULTENV_SECRET_ID")]
+    pub secret_id: Option<String>,
 
-    /// AppRole secret ID for Vault auth.
-    #[arg(long, env = "VAULTENV_APPROLE_SECRET_ID")]
-    pub approle_secret_id: Option<String>,
+    /// Username (for `--method=ldap` or `--method=okta`).
+    #[arg(long, env = "VAULTENV_USERNAME")]
+    pub username: Option<String>,
 
-    /// LDAP username for Vault auth.
-    #[arg(long, env = "VAULTENV_LDAP_USERNAME")]
-    pub ldap_username: Option<String>,
+    /// Password (for `--method=ldap` or `--method=okta`).
+    #[arg(long, env = "VAULTENV_PASSWORD")]
+    pub password: Option<String>,
 
-    /// LDAP password for Vault auth.
-    #[arg(long, env = "VAULTENV_LDAP_PASSWORD")]
-    pub ldap_password: Option<String>,
+    /// JWT value (for `--method=jwt` or `--method=kubernetes`).
+    #[arg(long, env = "VAULTENV_JWT")]
+    pub jwt: Option<String>,
 
-    /// Okta username for Vault auth.
-    #[arg(long, env = "VAULTENV_OKTA_USERNAME")]
-    pub okta_username: Option<String>,
+    /// Path to file containing a JWT (for `--method=jwt` or
+    /// `--method=kubernetes`).
+    #[arg(long, env = "VAULTENV_JWT_FILE")]
+    pub jwt_file: Option<PathBuf>,
 
-    /// Okta password for Vault auth.
-    #[arg(long, env = "VAULTENV_OKTA_PASSWORD")]
-    pub okta_password: Option<String>,
-
-    /// Azure role for Vault auth.
-    #[arg(long, env = "VAULTENV_AZURE_ROLE")]
-    pub azure_role: Option<String>,
-
-    /// Azure resource URL for MSI (optional).
-    #[arg(long, env = "VAULTENV_AZURE_RESOURCE")]
-    pub azure_resource: Option<String>,
-
-    /// GCE role for Vault auth.
-    #[arg(long, env = "VAULTENV_GCP_GCE_ROLE")]
-    pub gcp_gce_role: Option<String>,
-
-    /// AWS EC2 role for Vault auth.
-    #[arg(long, env = "VAULTENV_AWS_EC2_ROLE")]
-    pub aws_ec2_role: Option<String>,
+    /// Azure resource URL for MSI (for `--method=azure`).
+    #[arg(long, env = "VAULTENV_RESOURCE")]
+    pub resource: Option<String>,
 
     /// AWS EC2 signature type (pkcs7, identity, rsa2048).
-    #[arg(long, env = "VAULTENV_AWS_EC2_SIGNATURE_TYPE", default_value = "pkcs7")]
-    pub aws_ec2_signature_type: crate::cloud_metadata::Ec2SignatureTypeArg,
-
-    /// JWT role for Vault auth.
-    #[arg(long, env = "VAULTENV_JWT_ROLE")]
-    pub jwt_role: Option<String>,
-
-    /// JWT token for Vault auth (direct value; prefer --jwt-token-file).
-    #[arg(long, env = "VAULTENV_JWT_TOKEN")]
-    pub jwt_token: Option<String>,
-
-    /// Path to file containing JWT token for Vault auth.
-    #[arg(long, env = "VAULTENV_JWT_TOKEN_FILE")]
-    pub jwt_token_file: Option<PathBuf>,
+    #[arg(long, env = "VAULTENV_AWS_SIGNATURE_TYPE", default_value = "pkcs7")]
+    pub aws_signature_type: crate::cloud_metadata::Ec2SignatureTypeArg,
 
     /// Path to the secrets file.
     #[arg(long, env = "VAULTENV_SECRETS_FILE")]
@@ -252,100 +233,111 @@ impl Options {
         Ok(())
     }
 
-    /// Resolve the auth backend name, defaulting from auth method if not set.
-    pub fn resolve_auth_backend(&mut self) {
-        if self.auth_backend.is_some() {
-            return;
-        }
-        self.auth_backend = match (
-            &self.token,
-            &self.github_token,
-            &self.kubernetes_role,
-            &self.approle_role_id,
-            &self.ldap_username,
-            &self.okta_username,
-            &self.azure_role,
-            &self.gcp_gce_role,
-            &self.aws_ec2_role,
-            &self.jwt_role,
-        ) {
-            (_, Some(_), _, _, _, _, _, _, _, _) => Some("github".to_string()),
-            (_, _, Some(_), _, _, _, _, _, _, _) => Some("kubernetes".to_string()),
-            (_, _, _, Some(_), _, _, _, _, _, _) => Some("approle".to_string()),
-            (_, _, _, _, Some(_), _, _, _, _, _) => Some("ldap".to_string()),
-            (_, _, _, _, _, Some(_), _, _, _, _) => Some("okta".to_string()),
-            (_, _, _, _, _, _, Some(_), _, _, _) => Some("azure".to_string()),
-            (_, _, _, _, _, _, _, Some(_), _, _) => Some("gcp".to_string()),
-            (_, _, _, _, _, _, _, _, Some(_), _) => Some("aws".to_string()),
-            (_, _, _, _, _, _, _, _, _, Some(_)) => Some("jwt".to_string()),
-            _ => None,
-        };
+    /// Resolve the mount path for the auth backend.
+    /// Prefers `--path`, then defaults to `--method`.
+    pub fn auth_path(&self) -> String {
+        self.path.clone().unwrap_or_else(|| self.method.clone())
     }
 
-    /// Determine the effective authentication method from parsed tokens/roles.
+    /// Determine the effective authentication method from `--method`
+    /// and the corresponding method-specific flags.
     pub fn auth_method(&self) -> AuthMethod {
-        if let Some(ref token) = self.token {
-            return AuthMethod::VaultToken {
-                token: token.clone(),
-            };
-        }
-        if let Some(ref gh) = self.github_token {
-            return AuthMethod::GitHub(gh.clone());
-        }
-        if let Some(ref role) = self.kubernetes_role {
-            return AuthMethod::Kubernetes { role: role.clone() };
-        }
-        if let (Some(role_id), Some(secret_id)) = (&self.approle_role_id, &self.approle_secret_id) {
-            return AuthMethod::AppRole {
-                role_id: role_id.clone(),
-                secret_id: secret_id.clone(),
-            };
-        }
-        if let (Some(user), Some(pass)) = (&self.ldap_username, &self.ldap_password) {
-            return AuthMethod::Ldap {
-                username: user.clone(),
-                password: pass.clone(),
-            };
-        }
-        if let (Some(user), Some(pass)) = (&self.okta_username, &self.okta_password) {
-            return AuthMethod::Okta {
-                username: user.clone(),
-                password: pass.clone(),
-            };
-        }
-        if let Some(role) = &self.azure_role {
-            return AuthMethod::Azure {
-                role: role.clone(),
-                resource: self.azure_resource.clone(),
-            };
-        }
-        if let Some(role) = &self.gcp_gce_role {
-            return AuthMethod::Gcp { role: role.clone() };
-        }
-        if let Some(role) = &self.aws_ec2_role {
-            return AuthMethod::AwsEc2 {
-                role: role.clone(),
-                signature_type: self.aws_ec2_signature_type.0,
-            };
-        }
-        if let (Some(role), Some(token)) = (&self.jwt_role, &self.jwt_token) {
-            return AuthMethod::Jwt {
-                role: role.clone(),
-                token: token.clone(),
-            };
-        }
-        if let Some(role) = &self.jwt_role {
-            if let Some(ref token_file) = self.jwt_token_file {
-                let token = std::fs::read_to_string(token_file)
-                    .with_context(|| format!("failed to read jwt token file: {:?}", token_file))
-                    .expect("jwt token file read failed");
-                return AuthMethod::Jwt {
-                    role: role.clone(),
-                    token: token.trim().to_string(),
-                };
+        match self.method.as_str() {
+            "token" => {
+                if let Some(ref token) = self.token {
+                    return AuthMethod::VaultToken {
+                        token: token.clone(),
+                    };
+                }
+                AuthMethod::None
             }
+            "github" => {
+                if let Some(ref t) = self.token {
+                    return AuthMethod::GitHub(t.clone());
+                }
+                AuthMethod::None
+            }
+            "kubernetes" => {
+                if let Some(ref r) = self.role {
+                    return AuthMethod::Kubernetes { role: r.clone() };
+                }
+                AuthMethod::None
+            }
+            "approle" => {
+                if let (Some(rid), Some(sid)) = (&self.role_id, &self.secret_id) {
+                    return AuthMethod::AppRole {
+                        role_id: rid.clone(),
+                        secret_id: sid.clone(),
+                    };
+                }
+                AuthMethod::None
+            }
+            "ldap" => {
+                if let (Some(u), Some(p)) = (&self.username, &self.password) {
+                    return AuthMethod::Ldap {
+                        username: u.clone(),
+                        password: p.clone(),
+                    };
+                }
+                AuthMethod::None
+            }
+            "okta" => {
+                if let (Some(u), Some(p)) = (&self.username, &self.password) {
+                    return AuthMethod::Okta {
+                        username: u.clone(),
+                        password: p.clone(),
+                    };
+                }
+                AuthMethod::None
+            }
+            "azure" => {
+                if let Some(ref r) = self.role {
+                    return AuthMethod::Azure {
+                        role: r.clone(),
+                        resource: self.resource.clone(),
+                    };
+                }
+                AuthMethod::None
+            }
+            "gcp" => {
+                if let Some(ref r) = self.role {
+                    return AuthMethod::Gcp { role: r.clone() };
+                }
+                AuthMethod::None
+            }
+            "aws" => {
+                if let Some(ref r) = self.role {
+                    return AuthMethod::AwsEc2 {
+                        role: r.clone(),
+                        signature_type: self.aws_signature_type.0,
+                    };
+                }
+                AuthMethod::None
+            }
+            "jwt" => {
+                let role = self.role.as_ref();
+                let token = self.jwt.as_ref();
+                if let (Some(r), Some(t)) = (role, token) {
+                    return AuthMethod::Jwt {
+                        role: r.clone(),
+                        token: t.clone(),
+                    };
+                }
+                if let Some(r) = role {
+                    if let Some(ref path) = self.jwt_file {
+                        let token = std::fs::read_to_string(path)
+                            .with_context(|| format!("failed to read jwt file: {:?}", path))
+                            .expect("jwt file read failed");
+                        return AuthMethod::Jwt {
+                            role: r.clone(),
+                            token: token.trim().to_string(),
+                        };
+                    }
+                }
+                AuthMethod::None
+            }
+            _ => AuthMethod::None,
         }
-        AuthMethod::None
     }
 
     /// Validate that all required fields are present.
@@ -476,6 +468,10 @@ fn read_env_file(path: &std::path::Path) -> Option<Vec<(String, String)>> {
     )
 }
 
+// ---------------------------------------------------------------------------
+// tests
+// ---------------------------------------------------------------------------
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -527,99 +523,28 @@ mod tests {
     }
 
     #[test]
-    fn test_auth_backend_default_github() {
-        let mut opts = Options {
-            github_token: Some("ghp_xxx".to_string()),
+    fn test_auth_path_prefers_path() {
+        let opts = Options {
+            method: "jwt".to_string(),
+            path: Some("oidc".to_string()),
             ..make_minimal()
         };
-        opts.resolve_auth_backend();
-        assert_eq!(opts.auth_backend, Some("github".to_string()));
+        assert_eq!(opts.auth_path(), "oidc");
     }
 
     #[test]
-    fn test_auth_backend_default_kubernetes() {
-        let mut opts = Options {
-            kubernetes_role: Some("my-app".to_string()),
+    fn test_auth_path_falls_back_to_method() {
+        let opts = Options {
+            method: "github".to_string(),
             ..make_minimal()
         };
-        opts.resolve_auth_backend();
-        assert_eq!(opts.auth_backend, Some("kubernetes".to_string()));
-    }
-
-    #[test]
-    fn test_auth_backend_default_approle() {
-        let mut opts = Options {
-            approle_role_id: Some("role-123".to_string()),
-            ..make_minimal()
-        };
-        opts.resolve_auth_backend();
-        assert_eq!(opts.auth_backend, Some("approle".to_string()));
-    }
-
-    #[test]
-    fn test_auth_backend_default_ldap() {
-        let mut opts = Options {
-            ldap_username: Some("alice".to_string()),
-            ..make_minimal()
-        };
-        opts.resolve_auth_backend();
-        assert_eq!(opts.auth_backend, Some("ldap".to_string()));
-    }
-
-    #[test]
-    fn test_auth_backend_default_okta() {
-        let mut opts = Options {
-            okta_username: Some("alice".to_string()),
-            ..make_minimal()
-        };
-        opts.resolve_auth_backend();
-        assert_eq!(opts.auth_backend, Some("okta".to_string()));
-    }
-
-    #[test]
-    fn test_auth_backend_default_azure() {
-        let mut opts = Options {
-            azure_role: Some("web-role".to_string()),
-            ..make_minimal()
-        };
-        opts.resolve_auth_backend();
-        assert_eq!(opts.auth_backend, Some("azure".to_string()));
-    }
-
-    #[test]
-    fn test_auth_backend_default_gcp() {
-        let mut opts = Options {
-            gcp_gce_role: Some("web-role".to_string()),
-            ..make_minimal()
-        };
-        opts.resolve_auth_backend();
-        assert_eq!(opts.auth_backend, Some("gcp".to_string()));
-    }
-
-    #[test]
-    fn test_auth_backend_default_aws() {
-        let mut opts = Options {
-            aws_ec2_role: Some("web-role".to_string()),
-            ..make_minimal()
-        };
-        opts.resolve_auth_backend();
-        assert_eq!(opts.auth_backend, Some("aws".to_string()));
-    }
-
-    #[test]
-    fn test_auth_backend_keeps_explicit() {
-        let mut opts = Options {
-            auth_backend: Some("custom".to_string()),
-            github_token: Some("ghp_xxx".to_string()),
-            ..make_minimal()
-        };
-        opts.resolve_auth_backend();
-        assert_eq!(opts.auth_backend, Some("custom".to_string()));
+        assert_eq!(opts.auth_path(), "github");
     }
 
     #[test]
     fn test_auth_method_token() {
         let opts = Options {
+            method: "token".to_string(),
             token: Some("hvs.xxx".to_string()),
             ..make_minimal()
         };
@@ -637,8 +562,9 @@ mod tests {
     #[test]
     fn test_auth_method_approle() {
         let opts = Options {
-            approle_role_id: Some("role-123".to_string()),
-            approle_secret_id: Some("secret-456".to_string()),
+            method: "approle".to_string(),
+            role_id: Some("role-123".to_string()),
+            secret_id: Some("secret-456".to_string()),
             ..make_minimal()
         };
         match opts.auth_method() {
@@ -653,8 +579,9 @@ mod tests {
     #[test]
     fn test_auth_method_ldap() {
         let opts = Options {
-            ldap_username: Some("alice".to_string()),
-            ldap_password: Some("p@ss".to_string()),
+            method: "ldap".to_string(),
+            username: Some("alice".to_string()),
+            password: Some("p@ss".to_string()),
             ..make_minimal()
         };
         match opts.auth_method() {
@@ -669,8 +596,9 @@ mod tests {
     #[test]
     fn test_auth_method_okta() {
         let opts = Options {
-            okta_username: Some("alice".to_string()),
-            okta_password: Some("p@ss".to_string()),
+            method: "okta".to_string(),
+            username: Some("alice".to_string()),
+            password: Some("p@ss".to_string()),
             ..make_minimal()
         };
         match opts.auth_method() {
@@ -685,8 +613,9 @@ mod tests {
     #[test]
     fn test_auth_method_azure() {
         let opts = Options {
-            azure_role: Some("web-role".to_string()),
-            azure_resource: Some("https://management.azure.com/".to_string()),
+            method: "azure".to_string(),
+            role: Some("web-role".to_string()),
+            resource: Some("https://management.azure.com/".to_string()),
             ..make_minimal()
         };
         match opts.auth_method() {
@@ -701,7 +630,8 @@ mod tests {
     #[test]
     fn test_auth_method_gcp() {
         let opts = Options {
-            gcp_gce_role: Some("web-role".to_string()),
+            method: "gcp".to_string(),
+            role: Some("web-role".to_string()),
             ..make_minimal()
         };
         match opts.auth_method() {
@@ -713,10 +643,11 @@ mod tests {
     }
 
     #[test]
-    fn test_auth_method_aws_ec2() {
+    fn test_auth_method_aws() {
         let opts = Options {
-            aws_ec2_role: Some("web-role".to_string()),
-            aws_ec2_signature_type: crate::cloud_metadata::Ec2SignatureTypeArg(
+            method: "aws".to_string(),
+            role: Some("web-role".to_string()),
+            aws_signature_type: crate::cloud_metadata::Ec2SignatureTypeArg(
                 crate::cloud_metadata::Ec2SignatureType::Identity,
             ),
             ..make_minimal()
@@ -737,20 +668,11 @@ mod tests {
     }
 
     #[test]
-    fn test_auth_backend_default_jwt() {
-        let mut opts = Options {
-            jwt_role: Some("ci-role".to_string()),
-            ..make_minimal()
-        };
-        opts.resolve_auth_backend();
-        assert_eq!(opts.auth_backend, Some("jwt".to_string()));
-    }
-
-    #[test]
-    fn test_auth_method_jwt_direct() {
+    fn test_auth_method_jwt() {
         let opts = Options {
-            jwt_role: Some("ci-role".to_string()),
-            jwt_token: Some("my-jwt-token".to_string()),
+            method: "jwt".to_string(),
+            role: Some("ci-role".to_string()),
+            jwt: Some("my-jwt-token".to_string()),
             ..make_minimal()
         };
         match opts.auth_method() {
@@ -764,11 +686,12 @@ mod tests {
 
     #[test]
     fn test_auth_method_jwt_from_file() {
-        let tmp = std::env::temp_dir().join("vaultenv_test_jwt.txt");
+        let tmp = std::env::temp_dir().join("vaultenv_test_jwt_new.txt");
         std::fs::write(&tmp, "file-jwt-token\n").unwrap();
         let opts = Options {
-            jwt_role: Some("ci-role".to_string()),
-            jwt_token_file: Some(tmp.clone()),
+            method: "jwt".to_string(),
+            role: Some("ci-role".to_string()),
+            jwt_file: Some(tmp.clone()),
             ..make_minimal()
         };
         match opts.auth_method() {
@@ -776,23 +699,6 @@ mod tests {
                 assert_eq!(role, "ci-role");
                 assert_eq!(token, "file-jwt-token");
             }
-            other => panic!("expected Jwt, got {other:?}"),
-        }
-        std::fs::remove_file(&tmp).ok();
-    }
-
-    #[test]
-    fn test_auth_method_jwt_direct_takes_precedence() {
-        let tmp = std::env::temp_dir().join("vaultenv_test_jwt_prec.txt");
-        std::fs::write(&tmp, "from-file").unwrap();
-        let opts = Options {
-            jwt_role: Some("ci-role".to_string()),
-            jwt_token: Some("from-direct".to_string()),
-            jwt_token_file: Some(tmp.clone()),
-            ..make_minimal()
-        };
-        match opts.auth_method() {
-            AuthMethod::Jwt { token, .. } => assert_eq!(token, "from-direct"),
             other => panic!("expected Jwt, got {other:?}"),
         }
         std::fs::remove_file(&tmp).ok();
@@ -811,26 +717,20 @@ mod tests {
             host: "localhost".to_string(),
             port: 8200,
             addr: None,
-            auth_backend: None,
+            method: "token".to_string(),
+            path: None,
             token: None,
-            github_token: None,
-            kubernetes_role: None,
-            approle_role_id: None,
-            approle_secret_id: None,
-            ldap_username: None,
-            ldap_password: None,
-            okta_username: None,
-            okta_password: None,
-            azure_role: None,
-            azure_resource: None,
-            gcp_gce_role: None,
-            aws_ec2_role: None,
-            aws_ec2_signature_type: crate::cloud_metadata::Ec2SignatureTypeArg(
+            role: None,
+            role_id: None,
+            secret_id: None,
+            username: None,
+            password: None,
+            jwt: None,
+            jwt_file: None,
+            resource: None,
+            aws_signature_type: crate::cloud_metadata::Ec2SignatureTypeArg(
                 crate::cloud_metadata::Ec2SignatureType::Pkcs7,
             ),
-            jwt_role: None,
-            jwt_token: None,
-            jwt_token_file: None,
             secrets_file: PathBuf::from("/dev/null"),
             cmd: "echo".to_string(),
             args: Vec::new(),
