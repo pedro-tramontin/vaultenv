@@ -227,10 +227,14 @@ Set `--log-level info` to see the full pipeline trace.
 
 ## License
 
-BSD-3-Clause. See [LICENSE](LICENSE).
+This project contains work derived from the original vaultenv (Copyright 2017,
+Channable, BSD-3-Clause) and new original Rust authorship (Apache-2.0).
+
+See [LICENSE](LICENSE) for the full dual-licensing terms.
 
 ---
 
 ## Credits
 
-Originally by [Channable](https://github.com/channable/vaultenv) (Haskell). This is a ground-up Rust rewrite.
+This project is a ground-up Rust rewrite of the original vaultenv.
+See [LICENSE](LICENSE) for attribution and copyright notices.
