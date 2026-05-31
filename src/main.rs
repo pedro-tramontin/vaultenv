@@ -2,11 +2,12 @@ use std::os::unix::ffi::OsStrExt;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use tracing::{error, info};
+use tracing::{debug, error, info, trace, warn};
 
 use vaultenv::{
-    config::{LogLevel, Options},
+    config::Options,
     secrets_file::read_secrets_file,
+    types::LogLevel,
     vault_api::{VaultClient, deduplicate, resolve_secrets},
 };
 
@@ -26,8 +27,11 @@ async fn run() -> Result<()> {
 
     // Initialise tracing subscriber from the requested log level.
     let filter = match opts.log_level.0 {
-        LogLevel::Error => tracing::Level::ERROR,
+        LogLevel::Trace => tracing::Level::TRACE,
+        LogLevel::Debug => tracing::Level::DEBUG,
         LogLevel::Info => tracing::Level::INFO,
+        LogLevel::Warn => tracing::Level::WARN,
+        LogLevel::Error => tracing::Level::ERROR,
     };
     tracing_subscriber::fmt()
         .with_max_level(filter)
@@ -36,16 +40,14 @@ async fn run() -> Result<()> {
 
     info!(version = env!("CARGO_PKG_VERSION"), "vaultenv starting");
 
-    // ── Phase 2: configuration ───────────────────────────────────────────
     info!("resolving configuration");
     opts.resolve_addr().context("invalid VAULT_ADDR")?;
     opts.validate().context("invalid configuration")?;
 
-    if opts.log_level.0 == LogLevel::Info {
-        eprintln!("{opts:#?}");
+    if opts.log_level.0 >= LogLevel::Debug {
+        debug!("{opts:#?}");
     }
 
-    // ── Phase 3: secrets file ──────────────────────────────────────────
     info!(path = %opts.secrets_file.display(), "reading secrets file");
     let secrets = read_secrets_file(&opts.secrets_file)
         .map_err(|e| anyhow::anyhow!("failed to read secrets file: {e}"))?;
@@ -55,7 +57,6 @@ async fn run() -> Result<()> {
     }
     info!(count = secrets.len(), "secrets loaded");
 
-    // ── Phase 4: Vault client ──────────────────────────────────────────
     let client = VaultClient::new(
         &opts.host,
         opts.port,
@@ -113,7 +114,7 @@ async fn run() -> Result<()> {
         "secrets resolved and deduplicated"
     );
 
-    // ── Phase 5: build environment ─────────────────────────────────────
+    // Build environment
     info!(inherit = opts.inherit_env, "building process environment");
     let mut env: Vec<(String, String)> = if opts.inherit_env {
         let blacklist: std::collections::HashSet<String> =
@@ -132,6 +133,10 @@ async fn run() -> Result<()> {
         if !acc.iter().any(|(k, _)| k == &item.0) {
             acc.push(item);
         } else {
+            warn!(
+                var_name = %item.0,
+                "secret shadowed inherited environment variable"
+            );
             // Replace existing with new value (secret wins over inherited)
             for (k, v) in &mut acc {
                 if k == &item.0 {
@@ -141,8 +146,9 @@ async fn run() -> Result<()> {
         }
         acc
     });
+    trace!(count = env.len(), "final environment built");
 
-    // ── Phase 6: execve into CMD ───────────────────────────────────────
+    // Prepare and exec
     let program = if opts.use_path {
         which::which(&opts.cmd).unwrap_or_else(|_| std::path::PathBuf::from(&opts.cmd))
     } else {
