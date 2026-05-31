@@ -1,0 +1,32 @@
+[package]
+name = "vaultenv"
+version = "0.19.0"
+authors = ["Pedro Tramontin <pedro@example.com>"]
+edition = "2024"
+rust-version = "1.85"
+license = "BSD-3-Clause"
+description = "Runs processes with secrets from HashiCorp Vault"
+repository = "https://github.com/pedro-tramontin/vaultenv"
+keywords = ["vault", "secrets", "hashicorp", "env"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json", "native-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["env", "derive"] }
+backon = "1"
+nix = { version = "0.29", features = ["process"] }
+winnow = "0.7"
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+tempfile = "3"
+assert_cmd = "2"
+predicates = "3"
+tower = { version = "0.5", features = ["util"] }
+wiremock = "0.6"
