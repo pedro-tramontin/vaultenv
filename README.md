@@ -2,7 +2,7 @@
 
 Run programs with secrets from [HashiCorp Vault](https://www.vaultproject.io/).
 
-A Rust rewrite of [`vaultenv`](https://github.com/channable/vaultenv). It reads a secrets file, fetches values from Vault, injects them into the environment, and `execve`s into your program — replacing the vaultenv process entirely.
+This project is inspired by the original [`vaultenv`](https://github.com/channable/vaultenv) (Haskell, created by [Channable](https://www.channable.com/)). It preserves the core idea — reading a secrets file, fetching values from Vault, injecting them into the environment, and replacing itself via `execve` — but reimagines the interface and significantly expands the feature set.
 
 ---
 
@@ -237,4 +237,4 @@ vaultenv resolves all secrets, builds the environment, and calls `execve` to rep
 
 This project is dual-licensed under [Apache-2.0](LICENSE) OR [BSD-3-Clause](LICENSE).
 
-The Rust implementation is licensed under Apache-2.0. It is a derivative work of the original `vaultenv` project, which was licensed under the BSD-3-Clause license (Copyright 2017). See the `LICENSE` file for the full dual-license text and attribution notices.
+The Rust implementation is licensed under Apache-2.0. It is a derivative work of the original `vaultenv` project by Channable, which was written in Haskell and licensed under the BSD-3-Clause license (Copyright © 2017 Channable, https://www.channable.com/). See the `LICENSE` file for the full dual-license text and attribution notices.
