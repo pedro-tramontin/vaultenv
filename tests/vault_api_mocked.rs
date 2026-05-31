@@ -251,3 +251,87 @@ async fn test_concurrent_fetch() {
     let results = client.get_secrets(&mount_info, &secrets, 8).await.unwrap();
     assert_eq!(results.len(), 2);
 }
+
+#[tokio::test]
+async fn test_approle_auth_success() {
+    let server = MockServer::start().await;
+    let (host, port) = parse_uri(&server.uri());
+
+    Mock::given(method("POST"))
+        .and(path("/v1/auth/approle/login"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "auth": { "client_token": "approle-token-123" }
+        })))
+        .mount(&server)
+        .await;
+
+    let client = VaultClient::new(&host, port, false, None, 40, 9).unwrap();
+    let client = client
+        .authenticate(
+            &AuthMethod::AppRole {
+                role_id: "role-123".into(),
+                secret_id: "secret-456".into(),
+            },
+            Some("approle"),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(client.token(), Some("approle-token-123"));
+}
+
+#[tokio::test]
+async fn test_ldap_auth_success() {
+    let server = MockServer::start().await;
+    let (host, port) = parse_uri(&server.uri());
+
+    Mock::given(method("POST"))
+        .and(path("/v1/auth/ldap/login/alice"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "auth": { "client_token": "ldap-token-123" }
+        })))
+        .mount(&server)
+        .await;
+
+    let client = VaultClient::new(&host, port, false, None, 40, 9).unwrap();
+    let client = client
+        .authenticate(
+            &AuthMethod::Ldap {
+                username: "alice".into(),
+                password: "p@ss".into(),
+            },
+            Some("ldap"),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(client.token(), Some("ldap-token-123"));
+}
+
+#[tokio::test]
+async fn test_okta_auth_success() {
+    let server = MockServer::start().await;
+    let (host, port) = parse_uri(&server.uri());
+
+    Mock::given(method("POST"))
+        .and(path("/v1/auth/okta/login/alice"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "auth": { "client_token": "okta-token-123" }
+        })))
+        .mount(&server)
+        .await;
+
+    let client = VaultClient::new(&host, port, false, None, 40, 9).unwrap();
+    let client = client
+        .authenticate(
+            &AuthMethod::Okta {
+                username: "alice".into(),
+                password: "p@ss".into(),
+            },
+            Some("okta"),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(client.token(), Some("okta-token-123"));
+}

@@ -42,6 +42,12 @@ pub enum AuthMethod {
     Kubernetes { role: String },
     /// Direct Vault token.
     VaultToken { token: String },
+    /// Authenticate via AppRole (role_id + secret_id).
+    AppRole { role_id: String, secret_id: String },
+    /// Authenticate via LDAP (username + password).
+    Ldap { username: String, password: String },
+    /// Authenticate via Okta (username + password).
+    Okta { username: String, password: String },
 }
 
 /// All configuration resolved from CLI, environment variables, and defaults.
@@ -79,6 +85,30 @@ pub struct Options {
     /// Kubernetes role for Vault auth.
     #[arg(long, env = "VAULTENV_KUBERNETES_ROLE")]
     pub kubernetes_role: Option<String>,
+
+    /// AppRole role ID for Vault auth.
+    #[arg(long, env = "VAULTENV_APPROLE_ROLE_ID")]
+    pub approle_role_id: Option<String>,
+
+    /// AppRole secret ID for Vault auth.
+    #[arg(long, env = "VAULTENV_APPROLE_SECRET_ID")]
+    pub approle_secret_id: Option<String>,
+
+    /// LDAP username for Vault auth.
+    #[arg(long, env = "VAULTENV_LDAP_USERNAME")]
+    pub ldap_username: Option<String>,
+
+    /// LDAP password for Vault auth.
+    #[arg(long, env = "VAULTENV_LDAP_PASSWORD")]
+    pub ldap_password: Option<String>,
+
+    /// Okta username for Vault auth.
+    #[arg(long, env = "VAULTENV_OKTA_USERNAME")]
+    pub okta_username: Option<String>,
+
+    /// Okta password for Vault auth.
+    #[arg(long, env = "VAULTENV_OKTA_PASSWORD")]
+    pub okta_password: Option<String>,
 
     /// Path to the secrets file.
     #[arg(long, env = "VAULTENV_SECRETS_FILE")]
@@ -181,9 +211,19 @@ impl Options {
         if self.auth_backend.is_some() {
             return;
         }
-        self.auth_backend = match (&self.token, &self.github_token, &self.kubernetes_role) {
-            (_, Some(_), _) => Some("github".to_string()),
-            (_, _, Some(_)) => Some("kubernetes".to_string()),
+        self.auth_backend = match (
+            &self.token,
+            &self.github_token,
+            &self.kubernetes_role,
+            &self.approle_role_id,
+            &self.ldap_username,
+            &self.okta_username,
+        ) {
+            (_, Some(_), _, _, _, _) => Some("github".to_string()),
+            (_, _, Some(_), _, _, _) => Some("kubernetes".to_string()),
+            (_, _, _, Some(_), _, _) => Some("approle".to_string()),
+            (_, _, _, _, Some(_), _) => Some("ldap".to_string()),
+            (_, _, _, _, _, Some(_)) => Some("okta".to_string()),
             _ => None,
         };
     }
@@ -200,6 +240,24 @@ impl Options {
         }
         if let Some(ref role) = self.kubernetes_role {
             return AuthMethod::Kubernetes { role: role.clone() };
+        }
+        if let (Some(role_id), Some(secret_id)) = (&self.approle_role_id, &self.approle_secret_id) {
+            return AuthMethod::AppRole {
+                role_id: role_id.clone(),
+                secret_id: secret_id.clone(),
+            };
+        }
+        if let (Some(user), Some(pass)) = (&self.ldap_username, &self.ldap_password) {
+            return AuthMethod::Ldap {
+                username: user.clone(),
+                password: pass.clone(),
+            };
+        }
+        if let (Some(user), Some(pass)) = (&self.okta_username, &self.okta_password) {
+            return AuthMethod::Okta {
+                username: user.clone(),
+                password: pass.clone(),
+            };
         }
         AuthMethod::None
     }
@@ -403,6 +461,36 @@ mod tests {
     }
 
     #[test]
+    fn test_auth_backend_default_approle() {
+        let mut opts = Options {
+            approle_role_id: Some("role-123".to_string()),
+            ..make_minimal()
+        };
+        opts.resolve_auth_backend();
+        assert_eq!(opts.auth_backend, Some("approle".to_string()));
+    }
+
+    #[test]
+    fn test_auth_backend_default_ldap() {
+        let mut opts = Options {
+            ldap_username: Some("alice".to_string()),
+            ..make_minimal()
+        };
+        opts.resolve_auth_backend();
+        assert_eq!(opts.auth_backend, Some("ldap".to_string()));
+    }
+
+    #[test]
+    fn test_auth_backend_default_okta() {
+        let mut opts = Options {
+            okta_username: Some("alice".to_string()),
+            ..make_minimal()
+        };
+        opts.resolve_auth_backend();
+        assert_eq!(opts.auth_backend, Some("okta".to_string()));
+    }
+
+    #[test]
     fn test_auth_backend_keeps_explicit() {
         let mut opts = Options {
             auth_backend: Some("custom".to_string()),
@@ -431,6 +519,54 @@ mod tests {
     }
 
     #[test]
+    fn test_auth_method_approle() {
+        let opts = Options {
+            approle_role_id: Some("role-123".to_string()),
+            approle_secret_id: Some("secret-456".to_string()),
+            ..make_minimal()
+        };
+        match opts.auth_method() {
+            AuthMethod::AppRole { role_id, secret_id } => {
+                assert_eq!(role_id, "role-123");
+                assert_eq!(secret_id, "secret-456");
+            }
+            other => panic!("expected AppRole, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_auth_method_ldap() {
+        let opts = Options {
+            ldap_username: Some("alice".to_string()),
+            ldap_password: Some("p@ss".to_string()),
+            ..make_minimal()
+        };
+        match opts.auth_method() {
+            AuthMethod::Ldap { username, password } => {
+                assert_eq!(username, "alice");
+                assert_eq!(password, "p@ss");
+            }
+            other => panic!("expected LDAP, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_auth_method_okta() {
+        let opts = Options {
+            okta_username: Some("alice".to_string()),
+            okta_password: Some("p@ss".to_string()),
+            ..make_minimal()
+        };
+        match opts.auth_method() {
+            AuthMethod::Okta { username, password } => {
+                assert_eq!(username, "alice");
+                assert_eq!(password, "p@ss");
+            }
+            other => panic!("expected Okta, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn test_validate_missing_cmd() {
         let mut opts = make_minimal();
         opts.cmd.clear();
@@ -447,6 +583,12 @@ mod tests {
             token: None,
             github_token: None,
             kubernetes_role: None,
+            approle_role_id: None,
+            approle_secret_id: None,
+            ldap_username: None,
+            ldap_password: None,
+            okta_username: None,
+            okta_password: None,
             secrets_file: PathBuf::from("/dev/null"),
             cmd: "echo".to_string(),
             args: Vec::new(),
