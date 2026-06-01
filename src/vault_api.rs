@@ -309,6 +309,63 @@ impl VaultClient {
                 .await?;
                 Ok(self.with_token(resp.auth.client_token))
             }
+            AuthMethod::AppRole { role_id, secret_id } => {
+                let backend = backend.unwrap_or("approle");
+                let body = serde_json::json!({ "role_id": role_id, "secret_id": secret_id });
+                let path = format!("/v1/auth/{backend}/login");
+                let client = self.clone();
+                let resp: ClientToken = (|| async {
+                    client
+                        .do_unauthenticated_json_request::<ClientToken>(
+                            reqwest::Method::POST,
+                            &path,
+                            Some(body.clone()),
+                        )
+                        .await
+                })
+                .retry(self.retry_builder)
+                .when(is_retryable)
+                .await?;
+                Ok(self.with_token(resp.auth.client_token))
+            }
+            AuthMethod::Ldap { username, password } => {
+                let backend = backend.unwrap_or("ldap");
+                let body = serde_json::json!({ "password": password });
+                let path = format!("/v1/auth/{backend}/login/{username}");
+                let client = self.clone();
+                let resp: ClientToken = (|| async {
+                    client
+                        .do_unauthenticated_json_request::<ClientToken>(
+                            reqwest::Method::POST,
+                            &path,
+                            Some(body.clone()),
+                        )
+                        .await
+                })
+                .retry(self.retry_builder)
+                .when(is_retryable)
+                .await?;
+                Ok(self.with_token(resp.auth.client_token))
+            }
+            AuthMethod::Okta { username, password } => {
+                let backend = backend.unwrap_or("okta");
+                let body = serde_json::json!({ "password": password });
+                let path = format!("/v1/auth/{backend}/login/{username}");
+                let client = self.clone();
+                let resp: ClientToken = (|| async {
+                    client
+                        .do_unauthenticated_json_request::<ClientToken>(
+                            reqwest::Method::POST,
+                            &path,
+                            Some(body.clone()),
+                        )
+                        .await
+                })
+                .retry(self.retry_builder)
+                .when(is_retryable)
+                .await?;
+                Ok(self.with_token(resp.auth.client_token))
+            }
         }
     }
 
