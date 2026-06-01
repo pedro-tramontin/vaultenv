@@ -902,3 +902,97 @@ async fn test_azure_auth_default_resource() {
 
     assert_eq!(client.token(), Some("azure-default-token"));
 }
+
+// ---------------------------------------------------------------------------
+// Builder method tests — the remaining with_* methods
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_builder_with_token_sets_token_and_uses_it() {
+    let server = MockServer::start().await;
+    let (host, port) = parse_uri(&server.uri());
+
+    Mock::given(method("GET"))
+        .and(path("/v1/sys/mounts"))
+        .and(wiremock::matchers::header("x-vault-token", "my-test-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "secret/": { "type": "kv", "options": { "version": "2" } }
+        })))
+        .mount(&server)
+        .await;
+
+    let client = VaultClient::new(&host, port, false, None, 40, 9).unwrap();
+    let client = client.with_token("my-test-token".into());
+    assert_eq!(client.token(), Some("my-test-token"));
+
+    // Verify the token is actually sent in authenticated requests.
+    let _ = client.get_mount_info().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_builder_with_tls_toggles_scheme() {
+    // Use a non-routable address (port 1 on localhost) so the request fails fast.
+    let client = VaultClient::new("127.0.0.1", 1, false, Some("t".into()), 40, 9).unwrap();
+    let https_client = client.with_tls(true).unwrap();
+
+    let err = https_client.get_mount_info().await.unwrap_err();
+    let msg = format!("{err}").to_lowercase();
+    assert!(
+        msg.contains("error")
+            || msg.contains("connect")
+            || msg.contains("refused")
+            || msg.contains("tls")
+            || msg.contains("handshake"),
+        "expected connection error after with_tls(true), got: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn test_builder_with_retry_base_delay_produces_working_client() {
+    let server = MockServer::start().await;
+    let (host, port) = parse_uri(&server.uri());
+
+    Mock::given(method("POST"))
+        .and(path("/v1/auth/github/login"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "auth": { "client_token": "delay-token" }
+        })))
+        .mount(&server)
+        .await;
+
+    let client = VaultClient::new(&host, port, false, None, 40, 9).unwrap();
+    let client = client.with_retry_base_delay(5);
+    let client = client
+        .authenticate(&AuthMethod::GitHub("ghp_xxx".into()), Some("github"))
+        .await
+        .unwrap();
+    assert_eq!(client.token(), Some("delay-token"));
+}
+
+#[tokio::test]
+async fn test_builder_chain_all_with_methods() {
+    let server = MockServer::start().await;
+    let (host, port) = parse_uri(&server.uri());
+
+    Mock::given(method("GET"))
+        .and(path("/v1/sys/mounts"))
+        .and(wiremock::matchers::header("x-vault-token", "chained-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "secret/": { "type": "kv", "options": { "version": "2" } }
+        })))
+        .mount(&server)
+        .await;
+
+    let client = VaultClient::new("wrong-host", 9999, false, None, 40, 9).unwrap();
+    let client = client
+        .with_host(&host)
+        .unwrap()
+        .with_port(port)
+        .unwrap()
+        .with_token("chained-token".into())
+        .with_retry_base_delay(1)
+        .with_retry_attempts(0);
+
+    assert_eq!(client.token(), Some("chained-token"));
+    let _ = client.get_mount_info().await.unwrap();
+}

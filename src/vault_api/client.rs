@@ -3,7 +3,7 @@
 //! Handles connection setup, request building, authentication dispatch,
 //! mount info discovery, and concurrent secret fetching.
 
-use std::{collections::HashMap, path::Path, sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use backon::{ExponentialBuilder, Retryable};
 use reqwest::{Client, RequestBuilder, StatusCode, Url};
@@ -464,8 +464,12 @@ impl VaultClient {
 
 /// Read the Kubernetes service account JWT from the well-known path.
 async fn read_kubernetes_jwt() -> Result<String, VaultError> {
-    let path = Path::new("/var/run/secrets/kubernetes.io/serviceaccount/token");
-    let bytes = tokio::fs::read(path)
+    let path = std::env::var("VAULTENV_KUBERNETES_JWT_PATH")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            std::path::PathBuf::from("/var/run/secrets/kubernetes.io/serviceaccount/token")
+        });
+    let bytes = tokio::fs::read(&path)
         .await
         .map_err(VaultError::KubernetesJwtFailed)?;
     String::from_utf8(bytes).map_err(|_| VaultError::KubernetesJwtInvalidUtf8)
