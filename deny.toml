@@ -9,6 +9,10 @@ feature-depth = 1
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "warn"
+# rsa 0.9.10 is pulled in only by jsonwebtoken dev-dependency for test JWT signing.
+# No patched version exists yet (RUSTSEC-2023-0071). Ignored because it is not
+# used in production code paths.
+ignore = ["RUSTSEC-2023-0071"]
 
 [licenses]
 allow = [
