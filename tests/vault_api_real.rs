@@ -59,6 +59,8 @@ async fn start_vault_container() -> (String, u16, ContainerAsync<GenericImage>) 
         .with_exposed_port(ContainerPort::Tcp(8200))
         .with_env_var("VAULT_DEV_ROOT_TOKEN_ID", ROOT_TOKEN)
         .with_env_var("VAULT_ADDR", "http://0.0.0.0:8200")
+        .with_label("vaultenv.test", "true")
+        .with_label("vaultenv.purpose", "integration-test")
         .start()
         .await
         .expect("vault container starts");
@@ -368,7 +370,10 @@ async fn test_real_vault_jwt_auth() {
     let claims = json!({
         "sub": "test-subject",
         "iss": "test-issuer",
-        "aud": "test-audience",
+        "nbf": (std::time::SystemTime::now() - std::time::Duration::from_secs(60))
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
         "exp": (std::time::SystemTime::now() + std::time::Duration::from_secs(3600))
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -453,6 +458,7 @@ async fn test_real_vault_kubernetes_auth() {
         .header("x-vault-token", ROOT_TOKEN)
         .json(&json!({
             "pem_keys": [pub_pem.trim()],
+            "kubernetes_host": "https://kubernetes.default.svc",
             "issuer": "kubernetes/serviceaccount",
             "disable_local_ca_jwt": true
         }))
@@ -471,6 +477,7 @@ async fn test_real_vault_kubernetes_auth() {
         .json(&json!({
             "bound_service_account_names": ["default"],
             "bound_service_account_namespaces": ["default"],
+            "token_bound_audiences": ["https://kubernetes.default.svc"],
             "token_policies": ["default"]
         }))
         .send()
@@ -486,6 +493,10 @@ async fn test_real_vault_kubernetes_auth() {
         "iss": "kubernetes/serviceaccount",
         "sub": "system:serviceaccount:default:default",
         "aud": ["https://kubernetes.default.svc"],
+        "nbf": (std::time::SystemTime::now() - std::time::Duration::from_secs(60))
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
         "exp": (std::time::SystemTime::now() + std::time::Duration::from_secs(3600))
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()

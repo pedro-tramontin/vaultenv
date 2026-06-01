@@ -37,7 +37,7 @@ predicates = "3"
 tower = { version = "0.5", features = ["util"] }
 wiremock = "0.6"
 testcontainers = "0.27"
-jsonwebtoken = "10"
+jsonwebtoken = { version = "10", features = ["rust_crypto"] }
 
 [profile.release]
 lto = true
