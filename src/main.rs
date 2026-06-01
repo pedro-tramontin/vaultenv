@@ -39,7 +39,6 @@ async fn run() -> Result<()> {
     // ── Phase 2: configuration ───────────────────────────────────────────
     info!("resolving configuration");
     opts.resolve_addr().context("invalid VAULT_ADDR")?;
-    opts.resolve_auth_backend();
     opts.validate().context("invalid configuration")?;
 
     if opts.log_level.0 == LogLevel::Info {
@@ -69,12 +68,14 @@ async fn run() -> Result<()> {
 
     // Authenticate
     let auth_method = opts.auth_method();
+    let auth_path = opts.auth_path();
     info!(
-        backend = opts.auth_backend.as_deref(),
+        method = %opts.method,
+        path = %auth_path,
         "authenticating to Vault"
     );
     let client = client
-        .authenticate(&auth_method, opts.auth_backend.as_deref())
+        .authenticate(&auth_method, Some(&auth_path))
         .await
         .map_err(|e| anyhow::anyhow!("authentication failed: {e}"))?;
     info!("Vault authentication successful");
