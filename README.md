@@ -204,18 +204,24 @@ cargo test --test end_to_end
 
 ```mermaid
 flowchart TD
-    CLI["CLI (clap)"] -->|Options| Config
-    Config["Config (config.rs)"] -->|SecretsFile path| SecretsFile
-    SecretsFile["Secrets File (secrets_file.rs)"] -->|Vec&lt;Secret&gt;| VaultAPI
-    VaultAPI["Vault API (vault_api.rs)"] -->|HashMap&lt;path, VaultData&gt;| Resolution
-    Resolution["Resolution (main.rs)"] -->|execve| Child["Target Program"]
+    CLI["CLI (clap)"] -->|Options| Config["Config (config.rs)"]
+    Config -->|SecretsFile path| SecretsFile["Secrets File (secrets_file.rs)"]
+    SecretsFile -->|Vec&lt;Secret&gt;| VaultAPI["Vault API (vault_api.rs)"]
+    VaultAPI -->|HashMap&lt;path, VaultData&gt;| Resolution["Resolution (main.rs)"]
+    Resolution -->|execve| Child["Target Program"]
 
-    Config -.->|VAULT_ADDR parsing\nAuth method resolution| Config
-    Config -.->|Env-file loading| Config
-    SecretsFile -.->|winnow parser\nV2-only| SecretsFile
-    VaultAPI -.->|reqwest + backon retry| VaultAPI
-    VaultAPI -.->|tokio::sync::Semaphore\nConcurrency limit| VaultAPI
-    Resolution -.->|Deduplication\nEnv merging| Resolution
+    Config -.->|VAULT_ADDR parsing| A1
+    Config -.->|Auth method resolution| A2
+    Config -.->|Env-file loading| A3
+
+    SecretsFile -.->|winnow parser| B1
+    SecretsFile -.->|V2-only| B2
+
+    VaultAPI -.->|reqwest + backon retry| C1
+    VaultAPI -.->|tokio::sync::Semaphore| C2
+
+    Resolution -.->|Deduplication| D1
+    Resolution -.->|Env merging| D2
 ```
 
 ### Concurrency model
