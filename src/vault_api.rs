@@ -121,6 +121,11 @@ pub struct MountInfo {
 }
 
 impl MountInfo {
+    /// Create mount info from an explicit map.
+    pub fn from_map(mounts: HashMap<String, EngineType>) -> Self {
+        MountInfo { mounts }
+    }
+
     /// Return the engine type for a given mount, defaulting to KV1.
     fn engine_type(&self, mount: &str) -> EngineType {
         let key = format!("{mount}/");
@@ -128,7 +133,7 @@ impl MountInfo {
     }
 
     /// Build the Vault API path for a secret given mount info.
-    fn secret_path(&self, secret: &Secret) -> String {
+    pub fn secret_path(&self, secret: &Secret) -> String {
         match self.engine_type(&secret.mount) {
             EngineType::V1 => format!("/v1/{}/{}", secret.mount, secret.path),
             EngineType::V2 => format!("/v1/{}/data/{}", secret.mount, secret.path),
@@ -307,7 +312,13 @@ impl VaultClient {
         }
     }
 
-    fn with_token(&self, token: String) -> Self {
+    /// Return the current Vault token, if any.
+    pub fn token(&self) -> Option<&str> {
+        self.token.as_deref()
+    }
+
+    /// Return a new client configured with the given token.
+    pub fn with_token(&self, token: String) -> Self {
         VaultClient {
             client: self.client.clone(),
             base_url: self.base_url.clone(),
