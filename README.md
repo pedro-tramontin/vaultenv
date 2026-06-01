@@ -202,30 +202,20 @@ cargo test --test end_to_end
 
 ## Architecture
 
-```text
-┌─────────────────┐
-│   CLI (clap)    │
-└────────┬────────┘
-         │ Options
-┌────────▼────────┐
-│   Config        │── VAULT_ADDR parsing, auth method resolution
-│   (config.rs)   │── env-file loading
-└────────┬────────┘
-         │ SecretsFile path
-┌────────▼────────┐
-│ Secrets File    │── winnow parser (V2-only)
-│ (secrets_file.rs)│
-└────────┬────────┘
-         │ Vec<Secret>
-┌────────▼────────┐
-│  Vault API      │── reqwest + backon retry
-│  (vault_api.rs) │── tokio::sync::Semaphore (concurrency)
-└────────┬────────┘
-         │ HashMap<path, VaultData>
-┌────────▼────────┐
-│  Resolution     │── deduplication, env merging
-│  (main.rs)      │── nix::unistd::execve
-└─────────────────┘
+```mermaid
+flowchart TD
+    CLI["CLI (clap)"] -->|Options| Config
+    Config["Config (config.rs)"] -->|SecretsFile path| SecretsFile
+    SecretsFile["Secrets File (secrets_file.rs)"] -->|Vec&lt;Secret&gt;| VaultAPI
+    VaultAPI["Vault API (vault_api.rs)"] -->|HashMap&lt;path, VaultData&gt;| Resolution
+    Resolution["Resolution (main.rs)"] -->|execve| Child["Target Program"]
+
+    Config -.->|VAULT_ADDR parsing\nAuth method resolution| Config
+    Config -.->|Env-file loading| Config
+    SecretsFile -.->|winnow parser\nV2-only| SecretsFile
+    VaultAPI -.->|reqwest + backon retry| VaultAPI
+    VaultAPI -.->|tokio::sync::Semaphore\nConcurrency limit| VaultAPI
+    Resolution -.->|Deduplication\nEnv merging| Resolution
 ```
 
 ### Concurrency model
