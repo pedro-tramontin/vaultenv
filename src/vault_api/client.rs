@@ -3,7 +3,7 @@
 //! Handles connection setup, request building, authentication dispatch,
 //! mount info discovery, and concurrent secret fetching.
 
-use std::{collections::HashMap, path::Path, sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use backon::{ExponentialBuilder, Retryable};
 use reqwest::{Client, RequestBuilder, StatusCode, Url};
@@ -272,6 +272,69 @@ impl VaultClient {
         }
     }
 
+    /// Return a new client pointing at a different host (port and tls preserved).
+    pub fn with_host(&self, host: &str) -> Result<Self, VaultError> {
+        let scheme = self.base_url.scheme();
+        let port = self.base_url.port_or_known_default().unwrap_or(8200);
+        let base_url = Url::parse(&format!("{scheme}://{host}:{port}"))
+            .map_err(|e| VaultError::InvalidUrl(e.to_string()))?;
+        Ok(VaultClient {
+            client: self.client.clone(),
+            base_url,
+            token: self.token.clone(),
+            retry_builder: self.retry_builder,
+        })
+    }
+
+    /// Return a new client pointing at a different port (host and tls preserved).
+    pub fn with_port(&self, port: u16) -> Result<Self, VaultError> {
+        let scheme = self.base_url.scheme();
+        let host = self.base_url.host_str().unwrap_or("localhost").to_string();
+        let base_url = Url::parse(&format!("{scheme}://{host}:{port}"))
+            .map_err(|e| VaultError::InvalidUrl(e.to_string()))?;
+        Ok(VaultClient {
+            client: self.client.clone(),
+            base_url,
+            token: self.token.clone(),
+            retry_builder: self.retry_builder,
+        })
+    }
+
+    /// Return a new client with TLS toggled (host and port preserved).
+    pub fn with_tls(&self, tls: bool) -> Result<Self, VaultError> {
+        let scheme = if tls { "https" } else { "http" };
+        let host = self.base_url.host_str().unwrap_or("localhost").to_string();
+        let port = self.base_url.port_or_known_default().unwrap_or(8200);
+        let base_url = Url::parse(&format!("{scheme}://{host}:{port}"))
+            .map_err(|e| VaultError::InvalidUrl(e.to_string()))?;
+        Ok(VaultClient {
+            client: self.client.clone(),
+            base_url,
+            token: self.token.clone(),
+            retry_builder: self.retry_builder,
+        })
+    }
+
+    /// Return a new client with updated retry base delay.
+    pub fn with_retry_base_delay(&self, ms: u64) -> Self {
+        VaultClient {
+            client: self.client.clone(),
+            base_url: self.base_url.clone(),
+            token: self.token.clone(),
+            retry_builder: self.retry_builder.with_min_delay(Duration::from_millis(ms)),
+        }
+    }
+
+    /// Return a new client with updated retry max attempts.
+    pub fn with_retry_attempts(&self, attempts: u32) -> Self {
+        VaultClient {
+            client: self.client.clone(),
+            base_url: self.base_url.clone(),
+            token: self.token.clone(),
+            retry_builder: self.retry_builder.with_max_times(attempts as usize),
+        }
+    }
+
     async fn do_unauthenticated_json_request<T: for<'de> serde::Deserialize<'de>>(
         &self,
         method: reqwest::Method,
@@ -401,8 +464,12 @@ impl VaultClient {
 
 /// Read the Kubernetes service account JWT from the well-known path.
 async fn read_kubernetes_jwt() -> Result<String, VaultError> {
-    let path = Path::new("/var/run/secrets/kubernetes.io/serviceaccount/token");
-    let bytes = tokio::fs::read(path)
+    let path = std::env::var("VAULTENV_KUBERNETES_JWT_PATH")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            std::path::PathBuf::from("/var/run/secrets/kubernetes.io/serviceaccount/token")
+        });
+    let bytes = tokio::fs::read(&path)
         .await
         .map_err(VaultError::KubernetesJwtFailed)?;
     String::from_utf8(bytes).map_err(|_| VaultError::KubernetesJwtInvalidUtf8)
@@ -424,5 +491,54 @@ mod tests {
         let client = VaultClient::new("localhost", 8200, false, None, 40, 9).unwrap();
         let client2 = client.with_token("s.abc123".to_string());
         assert_eq!(client2.token(), Some("s.abc123"));
+    }
+
+    #[test]
+    fn test_client_with_host() {
+        let client = VaultClient::new("old.example.com", 8200, false, None, 40, 9).unwrap();
+        let client2 = client.with_host("vault.example.com").unwrap();
+        assert_eq!(client2.base_url.as_str(), "http://vault.example.com:8200/");
+        assert_eq!(client2.token(), client.token());
+    }
+
+    #[test]
+    fn test_client_with_port() {
+        let client = VaultClient::new("localhost", 8200, false, None, 40, 9).unwrap();
+        let client2 = client.with_port(8300).unwrap();
+        assert_eq!(client2.base_url.as_str(), "http://localhost:8300/");
+    }
+
+    #[test]
+    fn test_client_with_tls_toggle() {
+        let client = VaultClient::new("vault.example.com", 8200, false, None, 40, 9).unwrap();
+        let https = client.with_tls(true).unwrap();
+        assert_eq!(https.base_url.as_str(), "https://vault.example.com:8200/");
+        let http = https.with_tls(false).unwrap();
+        assert_eq!(http.base_url.as_str(), "http://vault.example.com:8200/");
+    }
+
+    #[test]
+    fn test_client_with_retry_base_delay() {
+        let client = VaultClient::new("localhost", 8200, false, None, 40, 9).unwrap();
+        let client2 = client.with_retry_base_delay(100);
+        // retry_builder internals are opaque; just assert structural equality
+        assert_eq!(client2.base_url, client.base_url);
+        assert_eq!(client2.token, client.token);
+    }
+
+    #[test]
+    fn test_client_with_retry_attempts() {
+        let client = VaultClient::new("localhost", 8200, false, None, 40, 9).unwrap();
+        let client2 = client.with_retry_attempts(3);
+        assert_eq!(client2.base_url, client.base_url);
+        assert_eq!(client2.token, client.token);
+    }
+
+    #[test]
+    fn test_builder_chain_preserves_token() {
+        let client = VaultClient::new("localhost", 8200, false, Some("tok".into()), 40, 9).unwrap();
+        let client2 = client.with_host("other").unwrap().with_port(8300).unwrap();
+        assert_eq!(client2.token(), Some("tok"));
+        assert_eq!(client2.base_url.as_str(), "http://other:8300/");
     }
 }
