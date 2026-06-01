@@ -1,10 +1,17 @@
-# vaultenv
+<div align="center">
+  <h1>vaultenv</h1>
+  <img src="docs/assets/rustacean-ferris.svg" alt="Ferris, the Rust mascot, cheerfully holding a Vault key" width="180">
+</div>
 
-[![CI](https://github.com/pedro-tramontin/vaultenv/actions/workflows/ci.yml/badge.svg)](https://github.com/pedro-tramontin/vaultenv/actions/workflows/ci.yml)
-[![Extended Checks](https://github.com/pedro-tramontin/vaultenv/actions/workflows/extended.yml/badge.svg)](https://github.com/pedro-tramontin/vaultenv/actions/workflows/extended.yml)
-[![License](https://img.shields.io/badge/license-Apache--2.0%20OR%20BSD--3-blue.svg)](LICENSE)
+<p align="center">
+  <a href="https://github.com/pedro-tramontin/vaultenv/actions/workflows/ci.yml"><img src="https://github.com/pedro-tramontin/vaultenv/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/pedro-tramontin/vaultenv/actions/workflows/extended.yml"><img src="https://github.com/pedro-tramontin/vaultenv/actions/workflows/extended.yml/badge.svg" alt="Extended Checks"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0%20OR%20BSD--3-blue.svg" alt="License"></a>
+</p>
 
-Run programs with secrets from [HashiCorp Vault](https://www.vaultproject.io/).
+<p align="center"><em>Run programs with secrets from <a href="https://www.vaultproject.io/">HashiCorp Vault</a>.</em></p>
+
+---
 
 This project is inspired by the original [`vaultenv`](https://github.com/channable/vaultenv) (Haskell, created by [Channable](https://www.channable.com/)). It preserves the core idea — reading a secrets file, fetching values from Vault, injecting them into the environment, and replacing itself via `execve` — but reimagines the interface and significantly expands the feature set.
 
