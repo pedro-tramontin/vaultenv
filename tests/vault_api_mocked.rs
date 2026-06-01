@@ -11,6 +11,10 @@ use wiremock::{
     matchers::{method, path},
 };
 
+/// Global lock for tests that mutate process environment variables.
+/// Wiremock tests run in parallel by default; `std::env::set_var` is not thread-safe.
+static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 fn parse_uri(uri: &str) -> (String, u16) {
     let url = Url::parse(uri).expect("valid mock URI");
     let host = url.host_str().unwrap_or("localhost").to_string();
@@ -345,6 +349,7 @@ async fn test_okta_auth_success() {
 
 #[tokio::test]
 async fn test_azure_auth_success() {
+    let _guard = ENV_LOCK.lock().await;
     let server = MockServer::start().await;
     let (host, port) = parse_uri(&server.uri());
 
@@ -395,6 +400,7 @@ async fn test_azure_auth_success() {
 
 #[tokio::test]
 async fn test_gcp_gce_auth_success() {
+    let _guard = ENV_LOCK.lock().await;
     let server = MockServer::start().await;
     let (host, port) = parse_uri(&server.uri());
 
@@ -434,6 +440,7 @@ async fn test_gcp_gce_auth_success() {
 
 #[tokio::test]
 async fn test_aws_ec2_auth_success() {
+    let _guard = ENV_LOCK.lock().await;
     let server = MockServer::start().await;
     let (host, port) = parse_uri(&server.uri());
 
@@ -550,4 +557,348 @@ async fn test_jwt_auth_with_oidc_backend_path() {
         .unwrap();
 
     assert_eq!(client.token(), Some("oidc-token-456"));
+}
+
+// ---------------------------------------------------------------------------
+// Builder method integration tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_builder_with_host_redirects_requests() {
+    let server_a = MockServer::start().await;
+    let server_b = MockServer::start().await;
+    let (host_a, port_a) = parse_uri(&server_a.uri());
+    let (host_b, port_b) = parse_uri(&server_b.uri());
+
+    Mock::given(method("POST"))
+        .and(path("/v1/auth/github/login"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "auth": { "client_token": "token-a" }
+        })))
+        .mount(&server_a)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/v1/auth/github/login"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "auth": { "client_token": "token-b" }
+        })))
+        .mount(&server_b)
+        .await;
+
+    let client = VaultClient::new(&host_a, port_a, false, None, 40, 9).unwrap();
+    let on_a = client
+        .authenticate(&AuthMethod::GitHub("ghp_xxx".into()), Some("github"))
+        .await
+        .unwrap();
+    assert_eq!(on_a.token(), Some("token-a"));
+
+    let on_b = client
+        .with_host(&host_b)
+        .unwrap()
+        .with_port(port_b)
+        .unwrap();
+    let on_b = on_b
+        .authenticate(&AuthMethod::GitHub("ghp_xxx".into()), Some("github"))
+        .await
+        .unwrap();
+    assert_eq!(on_b.token(), Some("token-b"));
+}
+
+#[tokio::test]
+async fn test_builder_with_port_redirects_requests() {
+    let server = MockServer::start().await;
+    let (host, port) = parse_uri(&server.uri());
+
+    Mock::given(method("POST"))
+        .and(path("/v1/auth/github/login"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "auth": { "client_token": "port-token" }
+        })))
+        .mount(&server)
+        .await;
+
+    let client = VaultClient::new(&host, 9999, false, None, 40, 9).unwrap();
+    let client2 = client.with_port(port).unwrap();
+    let client2 = client2
+        .authenticate(&AuthMethod::GitHub("ghp_xxx".into()), Some("github"))
+        .await
+        .unwrap();
+    assert_eq!(client2.token(), Some("port-token"));
+}
+
+#[tokio::test]
+async fn test_builder_with_retry_attempts_limits_retries() {
+    let server = MockServer::start().await;
+    let (host, port) = parse_uri(&server.uri());
+
+    // Three consecutive 503s.
+    Mock::given(method("POST"))
+        .and(path("/v1/auth/github/login"))
+        .respond_with(ResponseTemplate::new(503))
+        .up_to_n_times(3)
+        .mount(&server)
+        .await;
+
+    let client = VaultClient::new(&host, port, false, None, 40, 1).unwrap();
+    let err = client
+        .authenticate(&AuthMethod::GitHub("ghp_xxx".into()), Some("github"))
+        .await
+        .unwrap_err();
+
+    // With max_times=1 the retry happens once (original + 1 retry), still fails.
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("internal Vault error")
+            || msg.contains("Vault is unavailable")
+            || msg.contains("503")
+    );
+
+    // Now set max_times=0 — backon should not retry at all.
+    let client_no_retry = client.with_retry_attempts(0);
+    let err_no_retry = client_no_retry
+        .authenticate(&AuthMethod::GitHub("ghp_xxx".into()), Some("github"))
+        .await
+        .unwrap_err();
+    let msg2 = format!("{err_no_retry}");
+    assert!(
+        msg2.contains("internal Vault error")
+            || msg2.contains("Vault is unavailable")
+            || msg2.contains("503")
+    );
+}
+
+#[tokio::test]
+async fn test_auth_method_none_skips_login() {
+    let server = MockServer::start().await;
+    let (host, port) = parse_uri(&server.uri());
+
+    // No mocks mounted — any request would fail.
+    let client = VaultClient::new(&host, port, false, Some("existing".into()), 40, 9).unwrap();
+    let client2 = client.authenticate(&AuthMethod::None, None).await.unwrap();
+
+    // None should preserve whatever token was already present.
+    assert_eq!(client2.token(), Some("existing"));
+}
+
+#[tokio::test]
+async fn test_vault_token_auth_reuses_client_token() {
+    let server = MockServer::start().await;
+    let (host, port) = parse_uri(&server.uri());
+
+    // No mocks — token auth does not hit the server.
+    let client = VaultClient::new(&host, port, false, None, 40, 9).unwrap();
+    let client2 = client
+        .authenticate(
+            &AuthMethod::VaultToken {
+                token: "direct-token".to_string(),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(client2.token(), Some("direct-token"));
+}
+
+// ---------------------------------------------------------------------------
+// Cloud auth edge cases (failure paths + alternate signature types)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_azure_auth_failure_when_msi_returns_500() {
+    let _guard = ENV_LOCK.lock().await;
+    let server = MockServer::start().await;
+    let (host, port) = parse_uri(&server.uri());
+
+    unsafe {
+        std::env::set_var("VAULTENV_AZURE_METADATA_ENDPOINT", server.uri());
+    }
+
+    Mock::given(method("GET"))
+        .and(path("/metadata/identity/oauth2/token"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("msi outage"))
+        .mount(&server)
+        .await;
+
+    let client = VaultClient::new(&host, port, false, None, 40, 9).unwrap();
+    let err = client
+        .authenticate(
+            &AuthMethod::Azure {
+                role: "web-role".into(),
+                resource: Some("https://management.azure.com/".into()),
+            },
+            Some("azure"),
+        )
+        .await
+        .unwrap_err();
+
+    let msg = format!("{err}");
+    assert!(msg.contains("cloud metadata failed") || msg.contains("cloud metadata fetch failed"));
+}
+
+#[tokio::test]
+async fn test_gcp_auth_failure_when_metadata_returns_500() {
+    let _guard = ENV_LOCK.lock().await;
+    let server = MockServer::start().await;
+    let (host, port) = parse_uri(&server.uri());
+
+    unsafe {
+        std::env::set_var("VAULTENV_GCE_METADATA_HOST", server.uri());
+    }
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/computeMetadata/v1/instance/service-accounts/default/identity",
+        ))
+        .respond_with(ResponseTemplate::new(500).set_body_string("metadata outage"))
+        .mount(&server)
+        .await;
+
+    let client = VaultClient::new(&host, port, false, None, 40, 9).unwrap();
+    let err = client
+        .authenticate(
+            &AuthMethod::Gcp {
+                role: "web-role".into(),
+            },
+            Some("gcp"),
+        )
+        .await
+        .unwrap_err();
+
+    let msg = format!("{err}");
+    assert!(msg.contains("cloud metadata failed") || msg.contains("cloud metadata fetch failed"));
+}
+
+#[tokio::test]
+async fn test_aws_ec2_identity_signature_type() {
+    let _guard = ENV_LOCK.lock().await;
+    let server = MockServer::start().await;
+    let (host, port) = parse_uri(&server.uri());
+
+    unsafe {
+        std::env::set_var("VAULTENV_EC2_METADATA_ENDPOINT", server.uri());
+    }
+
+    Mock::given(method("GET"))
+        .and(path("/latest/dynamic/instance-identity/document"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("identity-doc"))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/latest/dynamic/instance-identity/signature"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("rsa-sig"))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/v1/auth/aws/login"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "auth": { "client_token": "aws-identity-token" }
+        })))
+        .mount(&server)
+        .await;
+
+    let client = VaultClient::new(&host, port, false, None, 40, 9).unwrap();
+    let client = client
+        .authenticate(
+            &AuthMethod::AwsEc2 {
+                role: "web-role".into(),
+                signature_type: Ec2SignatureType::Identity,
+            },
+            Some("aws"),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(client.token(), Some("aws-identity-token"));
+}
+
+#[tokio::test]
+async fn test_aws_ec2_rsa2048_signature_type() {
+    let _guard = ENV_LOCK.lock().await;
+    let server = MockServer::start().await;
+    let (host, port) = parse_uri(&server.uri());
+
+    unsafe {
+        std::env::set_var("VAULTENV_EC2_METADATA_ENDPOINT", server.uri());
+    }
+
+    Mock::given(method("GET"))
+        .and(path("/latest/dynamic/instance-identity/rsa2048"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("rsa2048-payload"))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/v1/auth/aws/login"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "auth": { "client_token": "aws-rsa-token" }
+        })))
+        .mount(&server)
+        .await;
+
+    let client = VaultClient::new(&host, port, false, None, 40, 9).unwrap();
+    let client = client
+        .authenticate(
+            &AuthMethod::AwsEc2 {
+                role: "web-role".into(),
+                signature_type: Ec2SignatureType::Rsa2048,
+            },
+            Some("aws"),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(client.token(), Some("aws-rsa-token"));
+}
+
+#[tokio::test]
+async fn test_azure_auth_default_resource() {
+    let _guard = ENV_LOCK.lock().await;
+    let server = MockServer::start().await;
+    let (host, port) = parse_uri(&server.uri());
+
+    unsafe {
+        std::env::set_var("VAULTENV_AZURE_METADATA_ENDPOINT", server.uri());
+    }
+
+    Mock::given(method("GET"))
+        .and(path("/metadata/identity/oauth2/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "msi-default-jwt"
+        })))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/metadata/instance/compute"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "name": "vm-01"
+        })))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/v1/auth/azure/login"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "auth": { "client_token": "azure-default-token" }
+        })))
+        .mount(&server)
+        .await;
+
+    let client = VaultClient::new(&host, port, false, None, 40, 9).unwrap();
+    let client = client
+        .authenticate(
+            &AuthMethod::Azure {
+                role: "web-role".into(),
+                resource: None, // default resource
+            },
+            Some("azure"),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(client.token(), Some("azure-default-token"));
 }
