@@ -2,12 +2,14 @@
 //!
 //! Grammar (informal):
 //! ```text
-//! secrets_file := newlines? whitespace "VERSION" "2" newlines secret_block*
-//! secret_block := "MOUNT" path newlines secret*
+//! secrets_file := newlines? whitespace "VERSION" "2" newlines blank_or_comment* secret_block*
+//! secret_block := "MOUNT" path newlines (blank_or_comment | secret)*
 //! secret       := var_name? path "#" key newlines
-//! var_name     := [A-Za-z_] [A-Za-z0-9_]* "="
-//! path         := non-whitespace, non-control, excluding '#' and '=' (1+ chars)
-//! key          := same as path
+//! blank_or_comment := newlines | comment
+//! comment     := whitespace? "#" not-newline* line_ending
+//! var_name    := [A-Za-z_] [A-Za-z0-9_]* "="
+//! path        := non-whitespace, non-control, excluding '#' and '=' (1+ chars)
+//! key         := same as path
 //! ```
 
 use std::path::Path;
@@ -79,6 +81,56 @@ fn newlines(input: &mut &str) -> Result<(), ContextError> {
     Ok(())
 }
 
+/// Parse one full-line comment: optional leading whitespace, `#`, everything up to
+/// (and including) the next line ending. The `#` separator inside a `secret` line
+/// (`path#key`) is never reached here because the `secret` rule consumes it first.
+///
+/// Returns Ok(()) if a comment was consumed, Err otherwise.
+fn comment(input: &mut &str) -> Result<(), ContextError> {
+    whitespace(input)?;
+    "#".parse_next(input)?;
+    // Consume every char up to the next newline (or EOF).
+    take_while(0.., |c: char| c != '\n' && c != '\r').parse_next(input)?;
+    // Then consume the line ending itself, so the next call sees a clean line.
+    let _ = line_ending::<&str, ContextError>.parse_next(input);
+    Ok(())
+}
+
+/// Skip **one or more** blank lines and/or full-line comments. Used wherever
+/// the grammar currently accepts a blank-line separator.
+///
+/// Returns Err if no progress was made (i.e. the input does not start with a
+/// newline or a `#` comment introducer). Returning Ok without consuming would
+/// be a footgun — the caller's loop would spin forever on the same input.
+/// (This is the bug that hung the test suite in the first attempt at this fix.)
+fn blank_or_comment(input: &mut &str) -> Result<(), ContextError> {
+    let mut consumed = false;
+
+    loop {
+        let checkpoint = *input;
+        if newlines(input).is_ok() {
+            consumed = true;
+            continue;
+        }
+        *input = checkpoint;
+        if comment(input).is_ok() {
+            consumed = true;
+            continue;
+        }
+        *input = checkpoint;
+        break;
+    }
+
+    if consumed {
+        Ok(())
+    } else {
+        // We must return Err so the caller's loop falls through to the next
+        // parser (e.g. `secret` or `secret_block`). Returning Ok here would
+        // be an infinite loop.
+        Err(ContextError::new())
+    }
+}
+
 /// Parse a path component: non-whitespace, non-control, excluding '#' and '='.
 fn path_component(input: &mut &str) -> Result<String, ContextError> {
     let s: &str = take_while(1.., |c: char| {
@@ -130,7 +182,7 @@ fn secret_block(input: &mut &str) -> Result<Vec<Secret>, ContextError> {
     let mut secrets = Vec::new();
     loop {
         let checkpoint = *input;
-        if newlines.parse_next(input).is_ok() {
+        if blank_or_comment(input).is_ok() {
             continue;
         }
         *input = checkpoint;
@@ -160,7 +212,7 @@ fn secrets_file(input: &mut &str) -> Result<Vec<Secret>, ContextError> {
     let mut all_secrets = Vec::new();
     loop {
         let checkpoint = *input;
-        if newlines.parse_next(input).is_ok() {
+        if blank_or_comment(input).is_ok() {
             continue;
         }
         *input = checkpoint;
@@ -173,7 +225,7 @@ fn secrets_file(input: &mut &str) -> Result<Vec<Secret>, ContextError> {
         }
     }
 
-    // Allow trailing whitespace/newlines
+    // Allow trailing whitespace/newlines/comments
     let _ = newlines.parse_next(input);
     let _ = whitespace(input);
 
@@ -340,6 +392,75 @@ MOUNT empty2\n\
     fn test_no_trailing_newline() {
         let result = parse_secrets_file("VERSION 2\nMOUNT secret\nfoo#bar");
         assert!(result.is_err());
+    }
+
+    // ── Comment support (regression: V2 format must accept `#` comments) ──
+
+    /// Whole-line comments must be skipped without breaking the parse.
+    /// Regression test for: secrets files with `#` lines were rejected
+    /// because the parser treated every line as a `secret` rule.
+    #[test]
+    fn test_full_line_comment() {
+        let input = "\
+VERSION 2
+
+# this is a comment about the file
+MOUNT secret
+
+# inline-of-mount comment
+foo#bar
+";
+        let secrets = parse_secrets_file(input).unwrap();
+        assert_eq!(secrets.len(), 1, "got: {secrets:?}");
+        assert_eq!(secrets[0].mount, "secret");
+        assert_eq!(secrets[0].path, "foo");
+        assert_eq!(secrets[0].key, "bar");
+    }
+
+    /// Indented comments (with leading whitespace) must also be skipped.
+    #[test]
+    fn test_indented_comment() {
+        let input = "\
+VERSION 2
+   # leading-whitespace comment
+MOUNT secret
+  foo#bar
+";
+        let secrets = parse_secrets_file(input).unwrap();
+        assert_eq!(secrets.len(), 1);
+        assert_eq!(secrets[0].var_name, "SECRET_FOO_BAR");
+    }
+
+    /// Multiple consecutive comment lines must all be skipped.
+    #[test]
+    fn test_consecutive_comments() {
+        let input = "\
+VERSION 2
+# one
+# two
+# three
+MOUNT secret
+foo#bar
+# tail comment
+BAR=baz#qux
+";
+        let secrets = parse_secrets_file(input).unwrap();
+        assert_eq!(secrets.len(), 2);
+        assert_eq!(secrets[0].var_name, "SECRET_FOO_BAR");
+        assert_eq!(secrets[1].var_name, "BAR");
+    }
+
+    /// A comment must NOT eat the `#` that separates path from key inside
+    /// a real secret line. The `#` inside `foo#bar` is a separator, not a
+    /// comment introducer, so it must be preserved.
+    #[test]
+    fn test_hash_separator_is_not_comment() {
+        // Sanity check: this already worked before, but pin it down so the
+        // comment-handling fix doesn't accidentally break the separator.
+        let input = "VERSION 2\nMOUNT secret\nfoo#bar\n";
+        let secrets = parse_secrets_file(input).unwrap();
+        assert_eq!(secrets[0].path, "foo");
+        assert_eq!(secrets[0].key, "bar");
     }
 
     #[test]
