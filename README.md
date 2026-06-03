@@ -101,7 +101,10 @@ Auto-generated names convert dashes and slashes to underscores. For example, `ap
 
 ### Global flags
 
-Every CLI flag has a corresponding environment variable:
+Every CLI flag has a corresponding environment variable. Flags with a
+direct equivalent in the upstream Vault CLI use the `VAULT_*` prefix
+(`VAULT_ADDR`, `VAULT_TOKEN`, `VAULT_MAX_RETRIES`); flags that are
+vaultenv-specific use the `VAULTENV_*` prefix.
 
 | Flag | Env Var | Default | Description |
 |------|---------|---------|-------------|
@@ -115,7 +118,7 @@ Every CLI flag has a corresponding environment variable:
 | `--inherit-env-blacklist` | `VAULTENV_INHERIT_ENV_BLACKLIST` | — | Comma-separated vars to drop |
 | `--duplicate-behavior` | `VAULTENV_DUPLICATE_VARIABLE_BEHAVIOR` | `error` | `error`, `keep`, `overwrite` |
 | `--retry-base-delay` | `VAULTENV_RETRY_BASE_DELAY` | `40` | Retry base delay (ms) |
-| `--retry-attempts` | `VAULTENV_RETRY_ATTEMPTS` | `9` | Max retry attempts |
+|| `--retry-attempts` | `VAULT_MAX_RETRIES` | `9` | Max retry attempts (mirrors upstream Vault CLI) |
 | `--max-concurrent-requests` | `VAULTENV_MAX_CONCURRENT_REQUESTS` | `8` | Parallel fetch limit (`0` = unlimited) |
 | `--log-level` | `VAULTENV_LOG_LEVEL` | `error` | `error` or `info` |
 | `--use-path` | `VAULTENV_USE_PATH` | `false` | Search `PATH` for the command |
