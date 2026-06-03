@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.1](https://github.com/pedro-tramontin/vaultenv/compare/v0.1.0...v0.1.1) (2026-06-03)
+
+
+### Features
+
+* align vaultenv with upstream vault CLI token & env-var conventions ([#33](https://github.com/pedro-tramontin/vaultenv/issues/33)) ([56fcfff](https://github.com/pedro-tramontin/vaultenv/commit/56fcfffafb75c1711bc7b770aa4de0ad6a8ae4d8))
+
+
+### Bug Fixes
+
+* **parser:** accept # comments in V2 secrets files ([#29](https://github.com/pedro-tramontin/vaultenv/issues/29)) ([31f97cf](https://github.com/pedro-tramontin/vaultenv/commit/31f97cf4ecd8f37881f39e7653f00f19fa200f45))
+* **release:** use RELEASE_PLEASE_TOKEN PAT to allow downstream release workflow ([#34](https://github.com/pedro-tramontin/vaultenv/issues/34)) ([93b4d63](https://github.com/pedro-tramontin/vaultenv/commit/93b4d63a85096fbd855a0b1895d79198c3c904c4))
+
 ## 0.1.0 (2026-06-01)
 
 
