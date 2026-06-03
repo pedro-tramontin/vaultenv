@@ -105,6 +105,14 @@ jobs:
 
       - name: Package binary (Windows)
         if: ${{ matrix.os == 'windows-latest' }}
+        # The Windows runner's default shell is PowerShell Core 7, which does
+        # not expand `"$ARCHIVE"` / `"$BIN"` as bash does (PowerShell uses
+        # `$env:ARCHIVE` to read env vars). Without this override, 7z receives
+        # an empty archive-name argument and aborts with "Archive name cannot
+        # be empty", and the artifact upload step then fails with `if-no-files-found: error`.
+        # Forcing bash here matches the "Set environment variables" step above
+        # (which also uses bash) and the Unix packaging step's inherited default.
+        shell: bash
         run: |
           7z a "$ARCHIVE" "$BIN"
           certutil -hashfile "$ARCHIVE" SHA256 | grep -v "CertUtil" > "$ARCHIVE.sha256"

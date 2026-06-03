@@ -186,6 +186,12 @@ async fn run() -> Result<()> {
 /// though Windows does not inherit signal handlers and the wrapper PID is
 /// preserved across the exec instead of being replaced — neither matters for
 /// the CLI wrapper contract.
+///
+/// `cmd_name` is the bare command name (used as `argv[0]` on Unix per
+/// `execve` convention); on Windows `Command::args` doesn't need a separate
+/// `argv[0]`, so the parameter is unused there. The `#[cfg_attr(windows,
+/// allow(unused_variables))]` silences the warning only on Windows.
+#[cfg_attr(windows, allow(unused_variables))]
 fn exec_child(
     program: std::path::PathBuf,
     cmd_name: String,
