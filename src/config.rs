@@ -117,7 +117,7 @@ pub struct Options {
     pub retry_base_delay_ms: u64,
 
     /// Maximum number of retry attempts.
-    #[arg(long, env = "VAULTENV_RETRY_ATTEMPTS", default_value_t = 9)]
+    #[arg(long, env = "VAULT_MAX_RETRIES", default_value_t = 9)]
     pub retry_attempts: u32,
 
     /// Log level.
@@ -613,5 +613,77 @@ mod tests {
             max_concurrent_requests: 8,
             duplicate_behavior: DuplicateBehaviorArg::default(),
         }
+    }
+
+    /// Regression test for the upstream-aligned env-var name on
+    /// `--retry-attempts`. The flag's env var is now `VAULT_MAX_RETRIES`
+    /// (matching the upstream Vault CLI); the previous
+    /// `VAULTENV_RETRY_ATTEMPTS` name no longer has any effect.
+    ///
+    /// We use `std::sync::Mutex` to serialise env-var mutations across the
+    /// parallel test runner — clap's env-var resolver reads from the process
+    /// env directly, so any cross-test leakage would produce flaky failures.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// RAII guard: restores the previous env-var state on drop, so a panic in
+    /// the test body can't leave the env modified for the next test.
+    struct EnvGuard {
+        key: &'static str,
+        prev: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let prev = std::env::var(key).ok();
+            // SAFETY: ENV_LOCK serialises all set/remove_var calls in this
+            // test module. The handler runs before main() (or any other
+            // thread reads env), and tests using set_var/remove_var
+            // thread-safety concerns are addressed via the lock.
+            unsafe {
+                std::env::set_var(key, value);
+            }
+            Self { key, prev }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            // SAFETY: same as EnvGuard::set.
+            unsafe {
+                match &self.prev {
+                    Some(v) => std::env::set_var(self.key, v),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_vault_max_retries_env_var() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _g = EnvGuard::set("VAULT_MAX_RETRIES", "5");
+        use clap::Parser;
+        let opts =
+            Options::try_parse_from(["vaultenv", "--secrets-file", "/dev/null", "echo"]).unwrap();
+        assert_eq!(
+            opts.retry_attempts, 5,
+            "VAULT_MAX_RETRIES should populate retry_attempts"
+        );
+    }
+
+    #[test]
+    fn test_legacy_vaultenv_retry_attempts_env_var_no_longer_works() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        // The old name VAULTENV_RETRY_ATTEMPTS must NOT populate
+        // retry_attempts. We set it to a value that would be obvious if
+        // it leaked through (e.g. 1) and assert the default (9) is used.
+        let _g = EnvGuard::set("VAULTENV_RETRY_ATTEMPTS", "1");
+        use clap::Parser;
+        let opts =
+            Options::try_parse_from(["vaultenv", "--secrets-file", "/dev/null", "echo"]).unwrap();
+        assert_eq!(
+            opts.retry_attempts, 9,
+            "legacy VAULTENV_RETRY_ATTEMPTS should no longer have any effect"
+        );
     }
 }

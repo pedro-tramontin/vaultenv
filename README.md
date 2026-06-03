@@ -71,6 +71,26 @@ vaultenv --secrets-file ./secrets.env -- ./my-app
 
 The `DATABASE_URL` and `REDIS_PASSWORD` variables will be fetched from Vault and injected into `my-app`'s environment.
 
+### 3. Token resolution
+
+`vaultenv` looks for a Vault token in this order, first non-empty source wins:
+
+1. `--token` CLI flag
+2. `VAULT_TOKEN` environment variable
+3. `~/.vault-token` file (matches the default `vault login` behaviour)
+
+The `~/.vault-token` fallback is convenient when you've already run `vault login` on the same machine — vaultenv picks up the token without needing to set `VAULT_TOKEN` explicitly. To skip the file fallback, set `VAULT_TOKEN` (even to an empty string in your wrapper script).
+
+**File permissions are enforced.** The token file must not be group- or world-readable (mode `0o600` or stricter). A file with loose permissions is rejected:
+
+```
+refusing to read token from /home/user/.vault-token: file is group/world readable
+(mode 0o644). chmod 600 it, or set VAULTENV_ALLOW_INSECURE_TOKEN_FILE=1 to
+bypass this check.
+```
+
+Set `VAULTENV_ALLOW_INSECURE_TOKEN_FILE=1` (or `=true`, case-insensitive) to override the check; a warning is logged each time a loose-permission file is used.
+
 ---
 
 ## Secrets File Format
@@ -101,7 +121,10 @@ Auto-generated names convert dashes and slashes to underscores. For example, `ap
 
 ### Global flags
 
-Every CLI flag has a corresponding environment variable:
+Every CLI flag has a corresponding environment variable. Flags with a
+direct equivalent in the upstream Vault CLI use the `VAULT_*` prefix
+(`VAULT_ADDR`, `VAULT_TOKEN`, `VAULT_MAX_RETRIES`); flags that are
+vaultenv-specific use the `VAULTENV_*` prefix.
 
 | Flag | Env Var | Default | Description |
 |------|---------|---------|-------------|
@@ -115,7 +138,7 @@ Every CLI flag has a corresponding environment variable:
 | `--inherit-env-blacklist` | `VAULTENV_INHERIT_ENV_BLACKLIST` | — | Comma-separated vars to drop |
 | `--duplicate-behavior` | `VAULTENV_DUPLICATE_VARIABLE_BEHAVIOR` | `error` | `error`, `keep`, `overwrite` |
 | `--retry-base-delay` | `VAULTENV_RETRY_BASE_DELAY` | `40` | Retry base delay (ms) |
-| `--retry-attempts` | `VAULTENV_RETRY_ATTEMPTS` | `9` | Max retry attempts |
+|| `--retry-attempts` | `VAULT_MAX_RETRIES` | `9` | Max retry attempts (mirrors upstream Vault CLI) |
 | `--max-concurrent-requests` | `VAULTENV_MAX_CONCURRENT_REQUESTS` | `8` | Parallel fetch limit (`0` = unlimited) |
 | `--log-level` | `VAULTENV_LOG_LEVEL` | `error` | `error` or `info` |
 | `--use-path` | `VAULTENV_USE_PATH` | `false` | Search `PATH` for the command |
