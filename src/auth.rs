@@ -4,7 +4,9 @@ use anyhow::{Context, Result};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use tracing::{debug, warn};
+use tracing::debug;
+#[cfg(unix)]
+use tracing::warn;
 
 /// Authentication method for Vault.
 #[derive(Debug, Clone, PartialEq, Eq)]
