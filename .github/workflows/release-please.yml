@@ -5,6 +5,14 @@ on:
     branches:
       - main
 
+# Do NOT change this token back to the default GITHUB_TOKEN. release-please
+# uses it to push the v* tag, and the default GITHUB_TOKEN is intentionally
+# blocked by GitHub from triggering downstream workflows. That breaks
+# .github/workflows/release.yml, which is the workflow that actually
+# builds the release binaries. v0.1.0 shipped as a GitHub Release with
+# zero assets because of this. Setup details live in the secret
+# configuration, not in this file.
+
 permissions:
   contents: write
   pull-requests: write
@@ -15,6 +23,6 @@ jobs:
     steps:
       - uses: googleapis/release-please-action@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
