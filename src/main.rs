@@ -5,6 +5,7 @@ use clap::Parser;
 use tracing::{debug, error, info, trace, warn};
 
 use vaultenv::{
+    auth::resolve_token_file,
     config::Options,
     secrets_file::read_secrets_file,
     types::LogLevel,
@@ -43,6 +44,22 @@ async fn run() -> Result<()> {
     info!("resolving configuration");
     opts.resolve_addr().context("invalid VAULT_ADDR")?;
     opts.validate().context("invalid configuration")?;
+
+    // Token resolution order: --token flag > VAULT_TOKEN env > ~/.vault-token file.
+    // Only consulted when --token and VAULT_TOKEN are both empty.
+    if opts.token.is_none() {
+        if let Some(home) = dirs::home_dir() {
+            let token_path = home.join(".vault-token");
+            if let Some(token) = resolve_token_file(&token_path)
+                .context("failed to resolve token from ~/.vault-token")?
+            {
+                info!(path = %token_path.display(), "using token from ~/.vault-token");
+                opts.token = Some(token);
+            }
+        } else {
+            debug!("no home directory; skipping ~/.vault-token fallback");
+        }
+    }
 
     if opts.log_level.0 >= LogLevel::Debug {
         debug!("{opts:#?}");
