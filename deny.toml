@@ -24,6 +24,13 @@ allow = [
     "Unicode-DFS-2016",
     "OpenSSL",
     "MPL-2.0",
+    # `webpki-roots` (used by `rustls` for the bundled Mozilla CA roots) is
+    # dual-licensed under CDLA-Permissive-2.0 or MIT. The CDLA-Permissive-2.0
+    # path is what `cargo` selects by default. CDLA-Permissive is a Linux
+    # Foundation data-license, not a software-license; it grants use of the
+    # contained data (the Mozilla CA bundle) without copyleft or attribution
+    # obligations beyond those already required by the Mozilla source terms.
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.8
 
