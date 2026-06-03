@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/pedro-tramontin/vaultenv/compare/v0.1.1...v0.1.2) (2026-06-03)
+
+
+### Bug Fixes
+
+* **build:** make all 7 release targets compile (Windows + Linux cross) ([#36](https://github.com/pedro-tramontin/vaultenv/issues/36)) ([289f853](https://github.com/pedro-tramontin/vaultenv/commit/289f853e2899d867a1681a7382ed74e12dd8fd6e))
+
 ## [0.1.1](https://github.com/pedro-tramontin/vaultenv/compare/v0.1.0...v0.1.1) (2026-06-03)
 
 
