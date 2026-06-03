@@ -1,6 +1,7 @@
 //! Authentication methods for Vault.
 
 use anyhow::{Context, Result};
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use tracing::{debug, warn};
@@ -116,6 +117,12 @@ pub fn resolve_token_file(file: &Path) -> Result<Option<String>> {
     Ok(Some(token))
 }
 
+// All tests in this module exercise Unix file-mode semantics (`OpenOptionsExt::mode`),
+// so the module is Unix-only by design. On Windows, the permission-check path is
+// a no-op (see the `#[cfg(unix)]` block on the production code) and the
+// `~/.vault-token` fallback behaviour is verified through the OS trust store
+// rather than POSIX mode bits.
+#[cfg(unix)]
 #[cfg(test)]
 mod tests {
     use super::*;
