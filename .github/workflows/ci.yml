@@ -121,3 +121,40 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release --locked
+
+  # One-shot Windows verification. Added to validate the cross-platform fix
+  # in PR #36 (cfg-gates + rustls) and the Windows packaging fix in PR #38
+  # (bash vs PowerShell). Once both fixes are confirmed working in a release,
+  # this job can be removed — the `ubuntu-latest` build-release job above is
+  # the canonical signal for the default platform, and `release.yml`
+  # exercises the full 7-target matrix on tag push. Keep this for at least
+  # one full release cycle to catch any cfg-gate or shell-handling regressions
+  # at PR time instead of release time.
+  build-windows:
+    name: Build Windows (x86_64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        # RUSTFLAGS=-Dwarnings from the env turns the cfg-gate code's
+        # Windows-only unused-variable warning into an error, so a missing
+        # `#[cfg_attr(windows, allow(unused_variables))]` on `exec_child`'s
+        # `cmd_name` parameter would fail this step.
+        run: cargo build --release --locked --target x86_64-pc-windows-msvc
+      - name: Verify packaging step works end-to-end
+        # The `shell: bash` directive is REQUIRED — without it, this step
+        # would inherit the runner default (PowerShell Core 7), and PowerShell
+        # does not expand "$ARCHIVE" / "$BIN" as bash does. That is exactly
+        # the bug that PR #38 fixed in `release.yml`; this step is the
+        # in-PR regression test for it.
+        shell: bash
+        run: |
+          BIN="target/x86_64-pc-windows-msvc/release/vaultenv.exe"
+          ARCHIVE="vaultenv-test-x86_64-pc-windows-msvc.zip"
+          7z a "$ARCHIVE" "$BIN"
+          certutil -hashfile "$ARCHIVE" SHA256 | grep -v "CertUtil" > "$ARCHIVE.sha256"
+          ls -la "$ARCHIVE" "$ARCHIVE.sha256"
