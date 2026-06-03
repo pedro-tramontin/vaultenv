@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/pedro-tramontin/vaultenv/compare/v0.1.2...v0.1.3) (2026-06-03)
+
+
+### Bug Fixes
+
+* **release:** Windows packaging step uses bash, not PowerShell ([#38](https://github.com/pedro-tramontin/vaultenv/issues/38)) ([8067595](https://github.com/pedro-tramontin/vaultenv/commit/8067595a92d4e3a62e942f44930327ee64933e88))
+
 ## [0.1.2](https://github.com/pedro-tramontin/vaultenv/compare/v0.1.1...v0.1.2) (2026-06-03)
 
 
