@@ -12,7 +12,25 @@ categories = ["command-line-utilities"]
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", features = ["json", "native-tls"] }
+# `rustls-tls` (pure-Rust TLS via `rustls` + bundled Mozilla CA roots) instead
+# of the default `native-tls`, so the build does not depend on
+# target-architecture OpenSSL system libraries. With the default `native-tls`
+# back-end, the cross-compile targets (i686-unknown-linux-gnu,
+# aarch64-unknown-linux-gnu) needed the target-architecture's `libssl-dev`
+# installed on the build host — `ubuntu-latest` does not provide it, and
+# `cross`'s default images do not include it for every target. The cert is
+# issued by Let's Encrypt (verified at vault's Tailscale HTTPS endpoint), so
+# bundled Mozilla roots are sufficient — no `rustls-tls-native-roots` needed.
+#
+# `default-features = false` is required: reqwest's `default` feature enables
+# `default-tls` (the native-tls back-end), and a feature cannot disable a
+# default feature, only add on top. Without this, both TLS back-ends are
+# compiled in and `openssl-sys` reappears as a transitive dep — the very
+# problem we are removing. We then re-enable the other useful defaults
+# (`charset` for response decoding, `http2` for HTTP/2 support,
+# `system-proxy` for HTTP_PROXY env var handling) so behaviour is unchanged
+# apart from the TLS back-end swap.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "charset", "http2", "system-proxy"] }
 url = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

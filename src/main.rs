@@ -1,3 +1,4 @@
+#[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
 
 use anyhow::{Context, Result};
@@ -173,26 +174,59 @@ async fn run() -> Result<()> {
     };
     info!(program = %opts.cmd, path = ?program, "preparing to exec");
 
-    let args: Vec<std::ffi::CString> = std::iter::once(opts.cmd.clone())
-        .chain(opts.args)
-        .map(|s| std::ffi::CString::new(s).expect("invalid NUL in argument"))
-        .collect();
+    exec_child(program, opts.cmd, opts.args, env)
+}
 
-    let env_cstr: Vec<std::ffi::CString> = env
-        .into_iter()
-        .map(|(k, v)| {
-            std::ffi::CString::new(format!("{k}={v}")).expect("invalid NUL in environment variable")
-        })
-        .collect();
+/// Replace the current process with `program` (Unix) or spawn `program` and
+/// propagate its exit status (Windows). The cross-platform divergence is
+/// forced by the `nix` crate being Unix-only (`nix::unistd::execve` does not
+/// exist on Windows); the Windows path uses the standard library's portable
+/// `std::process::Command` instead. Functional behaviour is equivalent for
+/// vaultenv's use case (a wrapper that injects env vars and runs a child),
+/// though Windows does not inherit signal handlers and the wrapper PID is
+/// preserved across the exec instead of being replaced — neither matters for
+/// the CLI wrapper contract.
+fn exec_child(
+    program: std::path::PathBuf,
+    cmd_name: String,
+    args: Vec<String>,
+    env: Vec<(String, String)>,
+) -> Result<()> {
+    #[cfg(unix)]
+    {
+        let program_cstr = std::ffi::CString::new(program.as_os_str().as_bytes())
+            .expect("invalid NUL in program path");
 
-    let argv: Vec<&std::ffi::CStr> = args.iter().map(|s| s.as_c_str()).collect();
-    let envp: Vec<&std::ffi::CStr> = env_cstr.iter().map(|s| s.as_c_str()).collect();
+        let arg_cstr: Vec<std::ffi::CString> = std::iter::once(cmd_name)
+            .chain(args)
+            .map(|s| std::ffi::CString::new(s).expect("invalid NUL in argument"))
+            .collect();
+        let env_cstr: Vec<std::ffi::CString> = env
+            .into_iter()
+            .map(|(k, v)| {
+                std::ffi::CString::new(format!("{k}={v}"))
+                    .expect("invalid NUL in environment variable")
+            })
+            .collect();
 
-    let program_cstr = std::ffi::CString::new(program.as_os_str().as_bytes())
-        .expect("invalid NUL in program path");
+        let argv: Vec<&std::ffi::CStr> = arg_cstr.iter().map(|s| s.as_c_str()).collect();
+        let envp: Vec<&std::ffi::CStr> = env_cstr.iter().map(|s| s.as_c_str()).collect();
 
-    nix::unistd::execve(&program_cstr, &argv, &envp)
-        .map_err(|e| anyhow::anyhow!("exec failed: {e}"))?;
-
-    unreachable!("execve should not return on success")
+        nix::unistd::execve(&program_cstr, &argv, &envp)
+            .map_err(|e| anyhow::anyhow!("exec failed: {e}"))?;
+        unreachable!("execve should not return on success")
+    }
+    #[cfg(windows)]
+    {
+        // Windows has no `execve` equivalent in stable Rust; spawn + wait is
+        // the portable replacement. We pass the bare program path (no PATH
+        // resolution) and let `Command` handle argv[0] quoting per Windows
+        // convention.
+        let status = std::process::Command::new(&program)
+            .args(&args)
+            .envs(env)
+            .status()
+            .map_err(|e| anyhow::anyhow!("exec failed: {e}"))?;
+        std::process::exit(status.code().unwrap_or(1));
+    }
 }
