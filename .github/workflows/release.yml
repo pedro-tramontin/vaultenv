@@ -1,5 +1,20 @@
 name: Release
 
+# This workflow compiles the release binaries and uploads them to the
+# GitHub Release. It does NOT create the release or write the release
+# body — that is release-please's responsibility (.github/workflows/
+# release-please.yml), which creates the GitHub Release as part of
+# pushing the v* tag.
+#
+# Why split it this way? release-please is the only thing that knows
+# the correct release body for a given tag (it groups commits by semver
+# impact, applies the bump-minor-pre-major / bump-patch-for-minor-pre-major
+# rules from release-please-config.json, etc.). Re-deriving the body
+# here would duplicate that logic and drift over time. Keeping the body
+# under release-please's control also means re-running this workflow
+# (e.g. after a flaky cross-compile job is retried) does NOT clobber the
+# body — binaries are uploaded additively; the body stays intact.
+
 on:
   push:
     tags:
@@ -118,33 +133,37 @@ jobs:
           if-no-files-found: error
 
   publish:
-    name: Publish GitHub Release
+    # Upload the built binaries to the GitHub Release that release-please
+    # already created. We do NOT touch the release body — release-please
+    # is the sole owner of it.
+    #
+    # NO checkout here: this job does not compile anything. The 7 matrix
+    # `build` jobs each have their own `actions/checkout@v4` for the
+    # `cargo build` step; by the time this job runs, all 7 binaries
+    # exist as GitHub Actions artifacts and the only thing left is to
+    # download them and upload to the release.
+    name: Upload Release Assets
     needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
       actions: read
     steps:
-      - uses: actions/checkout@v4
-      - name: Download all artifacts
+      - name: Download all build artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
           pattern: vaultenv-*
           merge-multiple: true
-      - name: Read CHANGELOG for release body
-        id: changelog
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          awk "/^## \[$VERSION\]/{flag=1;next}/^## \[/{flag=0}flag" CHANGELOG.md > /tmp/release_body.md || true
-          if [ ! -s /tmp/release_body.md ]; then
-            echo "No CHANGELOG section found for $VERSION — using generated notes." > /tmp/release_body.md
-          fi
-      - name: Publish Release
+      - name: Upload assets to the existing GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          body_path: /tmp/release_body.md
           files: artifacts/*
-          generate_release_notes: true
+          # Intentionally NOT setting body_path / body / generate_release_notes:
+          # release-please already wrote the release body when it pushed the
+          # v* tag, and we want to preserve it. softprops/action-gh-release@v2
+          # leaves the existing body untouched when no body-related input is
+          # provided. See the workflow file's top-of-file comment for the
+          # full rationale.
           draft: false
           prerelease: false
