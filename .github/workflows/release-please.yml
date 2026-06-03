@@ -5,6 +5,32 @@ on:
     branches:
       - main
 
+# CRITICAL: this workflow MUST use a PAT, not the default GITHUB_TOKEN.
+# Background: release-please pushes a v* tag as part of its release job.
+# The default GITHUB_TOKEN is intentionally blocked by GitHub from
+# triggering downstream workflows (security: prevents accidental
+# recursive Actions runs). The result is that .github/workflows/release.yml
+# — which builds the 7-target release matrix and publishes binaries to the
+# GitHub Release — NEVER FIRES. v0.1.0 was published as a GitHub Release
+# with 0 assets because of exactly this bug. See:
+#   https://docs.github.com/en/actions/security-guides/automatic-token-authentication#using-a-personal-access-token
+#
+# Fix: store a fine-grained PAT in the repo as RELEASE_PLEASE_TOKEN.
+# The PAT must have, on pedro-tramontin/vaultenv:
+#   - Contents: Read and write  (for pushing the v* tag)
+#   - Pull requests: Read and write  (release-please creates/updates its PR)
+#   - Metadata: Read-only  (auto-granted to fine-grained tokens)
+# The PAT does NOT need any other scopes (no workflow, no packages, etc.).
+# Setup instructions: see the comment block at the top of
+# .github/workflows/release-please.yml, or
+# github-pr-workflow skill → "Release automation with Release Please"
+# → "Downstream workflow triggering: why the Release workflow did not run
+#    after the tag was pushed" → "Fix" section.
+#
+# If the secret is missing or invalid, the action below will fail with
+# a clear auth error; the workflow will NOT silently fall back to the
+# default GITHUB_TOKEN (which would re-introduce the recursion bug).
+
 permissions:
   contents: write
   pull-requests: write
@@ -15,6 +41,6 @@ jobs:
     steps:
       - uses: googleapis/release-please-action@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
