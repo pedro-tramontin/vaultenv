@@ -71,6 +71,26 @@ vaultenv --secrets-file ./secrets.env -- ./my-app
 
 The `DATABASE_URL` and `REDIS_PASSWORD` variables will be fetched from Vault and injected into `my-app`'s environment.
 
+### 3. Token resolution
+
+`vaultenv` looks for a Vault token in this order, first non-empty source wins:
+
+1. `--token` CLI flag
+2. `VAULT_TOKEN` environment variable
+3. `~/.vault-token` file (matches the default `vault login` behaviour)
+
+The `~/.vault-token` fallback is convenient when you've already run `vault login` on the same machine — vaultenv picks up the token without needing to set `VAULT_TOKEN` explicitly. To skip the file fallback, set `VAULT_TOKEN` (even to an empty string in your wrapper script).
+
+**File permissions are enforced.** The token file must not be group- or world-readable (mode `0o600` or stricter). A file with loose permissions is rejected:
+
+```
+refusing to read token from /home/user/.vault-token: file is group/world readable
+(mode 0o644). chmod 600 it, or set VAULTENV_ALLOW_INSECURE_TOKEN_FILE=1 to
+bypass this check.
+```
+
+Set `VAULTENV_ALLOW_INSECURE_TOKEN_FILE=1` (or `=true`, case-insensitive) to override the check; a warning is logged each time a loose-permission file is used.
+
 ---
 
 ## Secrets File Format
